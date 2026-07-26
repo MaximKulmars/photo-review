@@ -1,4 +1,4 @@
-const $ = selector => document.querySelector(selector);
+const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const state = { category: "quality", page: 1, selected: new Set(), quarantineSelected: new Set(), latestJob: null, photoItem: null, photoMode: null, scanScope: "", picker: null, pickerPath: "", pickerCache: new Map(), transfer: null };
 const escapeHtml = value => String(value ?? "").replace(/[&<>'"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" }[c]));
