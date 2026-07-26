@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Разбор фотографий</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <button class="menu-button" id="menuButton" aria-label="Открыть меню">☰</button>
+    <a class="brand" href="#"><span class="brand-mark small">Ф</span><span>Разбор фотографий</span></a>
+    <form method="post" action="/logout"><button class="link-button">Выйти</button></form>
+  </header>
+
+  <div class="app-shell">
+    <nav class="sidebar" id="sidebar">
+      <button class="nav-item active" data-view="dashboard">Обзор</button>
+      <div class="nav-label">Очереди проверки</div>
+      {% for key, label in categories.items() %}
+      <button class="nav-item category-link" data-view="review" data-category="{{ key }}">
+        <span>{{ label }}</span><span class="badge" id="count-{{ key }}">0</span>
+      </button>
+      {% endfor %}
+      <button class="nav-item" data-view="quarantine">Карантин <span class="badge" id="count-quarantine">0</span></button>
+      <button class="nav-item" data-view="settings">Настройки</button>
+      <button class="nav-item" data-view="audit">История действий</button>
+    </nav>
+
+    <main class="content">
+      <section class="view active" id="view-dashboard">
+        <div class="page-heading">
+          <div><h1>Обзор архива</h1><p class="muted">Начните с одной небольшой папки, чтобы проверить результаты.</p></div>
+          <button class="button primary" id="openScan">Начать анализ</button>
+        </div>
+        <div class="notice warning hidden" id="passwordWarning">
+          Задайте собственный пароль в настройках CasaOS перед выдачей приложению доступа к фотографиям.
+        </div>
+        <div class="notice info">
+          Карантин не заменяет резервную копию. Автоматика только предлагает фотографии — решение всегда принимаете вы.
+        </div>
+        <div class="stats-grid">
+          <article class="stat"><strong id="statActive">0</strong><span>фотографий в архиве</span></article>
+          <article class="stat"><strong id="statPending">0</strong><span>ожидают решения</span></article>
+          <article class="stat"><strong id="statQuarantine">0</strong><span>в карантине</span></article>
+          <article class="stat"><strong id="statUnsupported">0</strong><span>RAW и видео пропущено</span></article>
+        </div>
+        <article class="panel" id="jobPanel">
+          <div class="panel-heading"><div><h2>Последний анализ</h2><p class="muted" id="jobMessage">Анализ ещё не запускался</p></div><span class="status-pill" id="jobState">—</span></div>
+          <div class="progress"><span id="jobProgress"></span></div>
+          <div class="job-details"><span id="jobNumbers">0 из 0</span><span id="jobErrors"></span></div>
+          <div class="button-row" id="jobActions"></div>
+        </article>
+        <div class="queue-grid" id="queueGrid"></div>
+      </section>
+
+      <section class="view" id="view-review">
+        <div class="page-heading">
+          <div><h1 id="reviewTitle">Очередь</h1><p class="muted" id="reviewSubtitle"></p></div>
+          <div class="button-row">
+            <button class="button" id="selectAll">Выбрать все</button>
+            <button class="button" id="actionKeep">Оставить</button>
+            <button class="button" id="actionLater">Решить позже</button>
+            <button class="button danger" id="actionQuarantine">В карантин</button>
+          </div>
+        </div>
+        <div class="cards" id="reviewCards"></div>
+        <div class="empty hidden" id="reviewEmpty"><div>✓</div><h2>Здесь пока пусто</h2><p>Запустите анализ или выберите другую очередь.</p></div>
+        <div class="pagination" id="pagination"></div>
+      </section>
+
+      <section class="view" id="view-quarantine">
+        <div class="page-heading">
+          <div><h1>Карантин</h1><p class="muted" id="quarantineSummary">Файлы можно восстановить до окончательного удаления.</p></div>
+          <div class="button-row">
+            <button class="button" id="restoreSelected">Восстановить</button>
+            <button class="button danger" id="deleteSelected">Удалить навсегда</button>
+          </div>
+        </div>
+        <div class="cards" id="quarantineCards"></div>
+        <div class="empty hidden" id="quarantineEmpty"><div>♻</div><h2>Карантин пуст</h2></div>
+      </section>
+
+      <section class="view" id="view-settings">
+        <div class="page-heading"><div><h1>Настройки анализа</h1><p class="muted">После сохранения фотографии будут проверены заново при следующем запуске.</p></div></div>
+        <form class="panel settings-form" id="settingsForm">
+          <label>Чувствительность
+            <select name="sensitivity">
+              <option value="careful">Осторожная</option>
+              <option value="balanced">Средняя</option>
+              <option value="broad">Широкая</option>
+            </select>
+          </label>
+          <label>Порог размытия <input type="number" name="blur_threshold" min="5" max="500" step="1"></label>
+          <label>Порог тёмного кадра <input type="number" name="dark_threshold" min="5" max="100" step="1"></label>
+          <label>Допустимое отличие похожих фото <input type="number" name="similar_distance" min="1" max="16"></label>
+          <label>Минимум символов для документа <input type="number" name="ocr_min_chars" min="10" max="500"></label>
+          <button class="button primary" type="submit">Сохранить настройки</button>
+        </form>
+      </section>
+
+      <section class="view" id="view-audit">
+        <div class="page-heading"><div><h1>История действий</h1><p class="muted">Последние перемещения, восстановления и удаления.</p></div></div>
+        <div class="panel table-wrap"><table><thead><tr><th>Время</th><th>Действие</th><th>Файл</th></tr></thead><tbody id="auditRows"></tbody></table></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="scanDialog">
+    <form id="scanForm">
+      <div class="dialog-heading"><h2>Новый анализ</h2><button type="button" class="icon-button" data-close>×</button></div>
+      <label>Что анализировать<select name="scope" id="folderSelect"></select></label>
+      <fieldset><legend>Где искать дубликаты</legend>
+        <label class="radio"><input type="radio" name="duplicate_scope" value="scope" checked> Только в выбранной папке</label>
+        <label class="radio"><input type="radio" name="duplicate_scope" value="archive"> Во всём проиндексированном архиве</label>
+      </fieldset>
+      <div class="dialog-actions"><button type="button" class="button" data-close>Отмена</button><button class="button primary" type="submit">Запустить</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDialog">
+    <form id="confirmForm">
+      <div class="dialog-heading"><h2>Удалить навсегда?</h2><button type="button" class="icon-button" data-close>×</button></div>
+      <p id="deleteDescription"></p>
+      <div class="notice danger">Это действие нельзя отменить.</div>
+      <label>Введите слово <strong>УДАЛИТЬ</strong><input name="confirmation" autocomplete="off" required></label>
+      <div class="dialog-actions"><button type="button" class="button" data-close>Отмена</button><button class="button danger" type="submit">Удалить</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="photoDialog" class="photo-dialog">
+    <div class="photo-dialog-layout">
+      <div class="photo-dialog-preview">
+        <img id="photoDialogImage" alt="">
+      </div>
+      <div class="photo-dialog-details">
+        <div class="dialog-heading">
+          <h2>Просмотр фотографии</h2>
+          <button type="button" class="icon-button" data-close aria-label="Закрыть">×</button>
+        </div>
+        <div class="path photo-dialog-path" id="photoDialogPath"></div>
+        <div class="reason" id="photoDialogReason"></div>
+        <dl class="photo-dialog-meta">
+          <div><dt>Дата</dt><dd id="photoDialogDate">—</dd></div>
+          <div><dt>Размер</dt><dd id="photoDialogSize">—</dd></div>
+          <div><dt>Разрешение</dt><dd id="photoDialogDimensions">—</dd></div>
+        </dl>
+        <div class="photo-dialog-actions" id="photoDialogActions"></div>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast"></div>
+  <script>window.CATEGORIES = {{ categories | tojson }};</script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Вход — Разбор фотографий</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <div class="brand-mark">Ф</div>
+    <h1>Разбор фотографий</h1>
+    <p class="muted">Локальная и безопасная проверка фотоархива</p>
+    {% if error %}<div class="notice danger">{{ error }}</div>{% endif %}
+    {% if default_password %}
+      <div class="notice warning">Используется стандартный пароль. Перед работой задайте свой пароль в настройках приложения CasaOS.</div>
+    {% endif %}
+    <form method="post" action="/login">
+      <label for="password">Пароль</label>
+      <input id="password" name="password" type="password" autofocus required>
+      <button class="button primary wide" type="submit">Войти</button>
+    </form>
+  </main>
+</body>
+</html>
+
