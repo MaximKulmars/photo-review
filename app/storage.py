@@ -127,9 +127,14 @@ class Storage:
         stat = destination.stat()
         with self.db.connect() as connection:
             connection.execute(
-                "UPDATE media SET relative_path=?, size=?, mtime_ns=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                """
+                UPDATE media SET relative_path=?, size=?, mtime_ns=?,
+                    last_scan_job_id=NULL, manual_quality=0,
+                    updated_at=CURRENT_TIMESTAMP WHERE id=?
+                """,
                 (relative, stat.st_size, stat.st_mtime_ns, media_id),
             )
+            connection.execute("DELETE FROM findings WHERE media_id=?", (media_id,))
             connection.execute(
                 "INSERT INTO audit_log(action,relative_path,details) VALUES(?,?,?)",
                 ("move", row["relative_path"], relative),
