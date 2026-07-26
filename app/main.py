@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -29,13 +28,7 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    for path in (
-        config.photos_root,
-        config.quarantine_root,
-        config.data_root,
-        config.thumbnail_root,
-        config.model_root,
-    ):
+    for path in (config.photos_root, config.quarantine_root, config.data_root, config.thumbnail_root, config.model_root):
         path.mkdir(parents=True, exist_ok=True)
     database.initialize()
     jobs.start_worker()
@@ -43,23 +36,48 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Разбор фотографий", lifespan=lifespan)
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=config.session_secret,
-    same_site="strict",
-    https_only=False,
-    max_age=60 * 60 * 24 * 30,
-)
+app.add_middleware(SessionMiddleware, secret_key=config.session_secret, same_site="strict", https_only=False, max_age=60 * 60 * 24 * 30)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
 def require_login(request: Request) -> None:
-    if request.session.get("authenticated") is not True:
+    if config.auth_enabled and request.session.get("authenticated") is not True:
         raise HTTPException(status_code=401, detail="Требуется вход")
 
 
 def row_dict(row) -> dict:
     return {key: row[key] for key in row.keys()}
+
+
+def latest_result_job():
+    return database.one("SELECT * FROM jobs WHERE state='completed' ORDER BY id DESC LIMIT 1")
+
+
+def safe_folder(relative: str) -> Path:
+    raw = Path(relative)
+    if raw.is_absolute() or any(part in {".", ".."} or part.startswith(".") for part in raw.parts):
+        raise HTTPException(400, "Недопустимый путь")
+    current = config.photos_root
+    for part in raw.parts:
+        current = current / part
+        if current.is_symlink():
+            raise HTTPException(400, "Символические ссылки недоступны")
+    try:
+        path = safe_path(config.photos_root, relative)
+    except ValueError as exc:
+        raise HTTPException(400, "Недопустимый путь") from exc
+    if path.is_symlink() or not path.is_dir():
+        raise HTTPException(404, "Папка не найдена")
+    return path
+
+
+def visible_directories(folder: Path) -> list[dict[str, str]]:
+    result = []
+    for child in folder.iterdir():
+        if child.name.startswith(".") or child.is_symlink() or not child.is_dir():
+            continue
+        result.append({"path": child.relative_to(config.photos_root).as_posix(), "name": child.name})
+    return sorted(result, key=lambda item: item["name"].casefold())
 
 
 class JobRequest(BaseModel):
@@ -69,12 +87,22 @@ class JobRequest(BaseModel):
 
 class ReviewAction(BaseModel):
     finding_ids: list[int] = Field(min_length=1, max_length=500)
-    action: Literal["keep", "later", "quarantine"]
+    action: Literal["keep", "later", "quarantine", "quality"]
 
 
 class MediaIds(BaseModel):
     media_ids: list[int] = Field(min_length=1, max_length=500)
     rename_on_conflict: bool = False
+
+
+class TransferRequest(MediaIds):
+    destination: str = ""
+    operation: Literal["copy", "move"]
+
+
+class FolderCreateRequest(BaseModel):
+    parent: str = ""
+    name: str = Field(min_length=1, max_length=120)
 
 
 class DeleteRequest(BaseModel):
@@ -92,25 +120,17 @@ class SettingsRequest(BaseModel):
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
-    return templates.TemplateResponse(
-        request=request,
-        name="login.html",
-        context={"default_password": config.password == "change-me"},
-    )
+    if not config.auth_enabled:
+        return RedirectResponse("/", status_code=303)
+    return templates.TemplateResponse(request=request, name="login.html", context={"default_password": config.password == "change-me"})
 
 
 @app.post("/login")
 def login(request: Request, password: str = Form(...)):
+    if not config.auth_enabled:
+        return RedirectResponse("/", status_code=303)
     if not password_matches(password, config.password):
-        return templates.TemplateResponse(
-            request=request,
-            name="login.html",
-            context={
-                "error": "Неверный пароль",
-                "default_password": config.password == "change-me",
-            },
-            status_code=401,
-        )
+        return templates.TemplateResponse(request=request, name="login.html", context={"error": "Неверный пароль", "default_password": config.password == "change-me"}, status_code=401)
     request.session.clear()
     request.session["authenticated"] = True
     return RedirectResponse("/", status_code=303)
@@ -119,7 +139,7 @@ def login(request: Request, password: str = Form(...)):
 @app.post("/logout")
 def logout(request: Request):
     request.session.clear()
-    return RedirectResponse("/login", status_code=303)
+    return RedirectResponse("/login" if config.auth_enabled else "/", status_code=303)
 
 
 @app.exception_handler(401)
@@ -131,72 +151,70 @@ async def unauthorized(request: Request, exc: HTTPException):
 
 @app.get("/", response_class=HTMLResponse, dependencies=[Depends(require_login)])
 def home(request: Request):
-    return templates.TemplateResponse(
-        request=request,
-        name="index.html",
-        context={"categories": CATEGORIES},
-    )
+    return templates.TemplateResponse(request=request, name="index.html", context={"categories": CATEGORIES, "auth_enabled": config.auth_enabled})
 
 
 @app.get("/api/summary", dependencies=[Depends(require_login)])
 def summary():
-    counts = database.all(
-        """
-        SELECT category, decision, COUNT(*) AS count
-        FROM findings f JOIN media m ON m.id=f.media_id
-        WHERE m.status='active'
-        GROUP BY category, decision
-        """
-    )
+    result_job = latest_result_job()
+    counts = []
+    if result_job:
+        job_id = int(result_job["id"])
+        counts = database.all("""
+            SELECT f.category, COUNT(*) AS count FROM findings f JOIN media m ON m.id=f.media_id
+            WHERE m.status='active' AND m.last_scan_job_id=? AND f.decision='pending'
+            GROUP BY f.category
+        """, (job_id,))
+        quality = database.one("""
+            SELECT COUNT(*) AS count FROM media m
+            WHERE m.status='active' AND m.last_scan_job_id=? AND m.error IS NULL
+              AND (m.manual_quality=1 OR NOT EXISTS(SELECT 1 FROM findings f WHERE f.media_id=m.id))
+        """, (job_id,))
+        counts = list(counts) + [{"category": "quality", "count": quality["count"]}]
     latest_job = database.one("SELECT * FROM jobs ORDER BY id DESC LIMIT 1")
-    library = database.one(
-        """
-        SELECT COUNT(*) AS total,
-          SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS active,
+    library = database.one("""
+        SELECT COUNT(*) AS total, SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS active,
           SUM(CASE WHEN status='quarantine' THEN 1 ELSE 0 END) AS quarantine,
-          SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors
-        FROM media
-        """
-    )
-    unsupported = (
-        latest_job["unsupported"] if latest_job and latest_job["unsupported"] else 0
-    )
-    return {
-        "categories": [row_dict(row) for row in counts],
-        "job": row_dict(latest_job) if latest_job else None,
-        "library": row_dict(library),
-        "unsupported": unsupported,
-        "warning": config.password == "change-me",
-    }
+          SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errors FROM media
+    """)
+    return {"categories": [row_dict(row) for row in counts], "job": row_dict(latest_job) if latest_job else None,
+            "result_job": row_dict(result_job) if result_job else None, "library": row_dict(library),
+            "unsupported": latest_job["unsupported"] if latest_job else 0,
+            "warning": config.auth_enabled and config.password == "change-me"}
 
 
 @app.get("/api/folders", dependencies=[Depends(require_login)])
-def folders():
-    result = [{"path": "", "name": "Весь архив"}]
-    if not config.photos_root.exists():
-        return result
-    for path in sorted(config.photos_root.rglob("*")):
-        if path.is_dir() and not path.is_symlink():
-            relative = path.relative_to(config.photos_root)
-            if len(relative.parts) <= 3 and not any(
-                part.startswith(".") for part in relative.parts
-            ):
-                result.append({"path": relative.as_posix(), "name": relative.as_posix()})
-    return result
+def folders(path: str = ""):
+    folder = safe_folder(path)
+    relative = folder.relative_to(config.photos_root).as_posix()
+    relative = "" if relative == "." else relative
+    parts = relative.split("/") if relative else []
+    breadcrumbs = [{"path": "", "name": "Архив"}]
+    breadcrumbs += [{"path": "/".join(parts[:index]), "name": parts[index - 1]} for index in range(1, len(parts) + 1)]
+    return {"path": relative, "breadcrumbs": breadcrumbs, "directories": visible_directories(folder)}
+
+
+@app.post("/api/folders", dependencies=[Depends(require_login)])
+def create_folder(payload: FolderCreateRequest):
+    if payload.name in {".", ".."} or payload.name.startswith(".") or "/" in payload.name or "\\" in payload.name:
+        raise HTTPException(400, "Введите имя одной новой папки")
+    parent = safe_folder(payload.parent)
+    target = parent / payload.name
+    if target.exists() or target.is_symlink():
+        raise HTTPException(409, "Такая папка уже существует")
+    target.mkdir()
+    return {"path": target.relative_to(config.photos_root).as_posix(), "name": target.name}
 
 
 @app.post("/api/jobs", dependencies=[Depends(require_login)])
 def create_job(payload: JobRequest):
-    active = database.one(
-        "SELECT id FROM jobs WHERE state IN ('queued','running','paused') LIMIT 1"
-    )
+    active = database.one("SELECT id FROM jobs WHERE state IN ('queued','running','paused') LIMIT 1")
     if active:
-        raise HTTPException(409, "Сначала завершите или отмените текущее задание")
+        raise HTTPException(409, "Сначала завершите или отмените текущий анализ")
     try:
-        job_id = jobs.create_job(payload.scope, payload.duplicate_scope)
+        return {"id": jobs.create_job(payload.scope, payload.duplicate_scope)}
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {"id": job_id}
 
 
 @app.post("/api/jobs/{job_id}/{action}", dependencies=[Depends(require_login)])
@@ -209,54 +227,34 @@ def job_action(job_id: int, action: Literal["pause", "resume", "cancel"]):
 
 
 @app.get("/api/review", dependencies=[Depends(require_login)])
-def review(
-    category: str = "exact",
-    decision: str = "pending",
-    page: int = 1,
-    page_size: int = 48,
-):
+def review(category: str = "exact", page: int = 1, page_size: int = 48):
     if category not in CATEGORIES:
         raise HTTPException(400, "Неизвестная категория")
-    page = max(1, page)
-    page_size = min(max(page_size, 1), 100)
-    total = database.one(
-        """
-        SELECT COUNT(*) AS count FROM findings f
-        JOIN media m ON m.id=f.media_id
-        WHERE f.category=? AND f.decision=? AND m.status='active'
-        """,
-        (category, decision),
-    )["count"]
-    rows = database.all(
-        """
-        SELECT f.*,m.relative_path,m.size,m.width,m.height,m.captured_at,
-          m.sharpness,m.brightness
-        FROM findings f JOIN media m ON m.id=f.media_id
-        WHERE f.category=? AND f.decision=? AND m.status='active'
-        ORDER BY COALESCE(f.group_key,''),f.suggested_best DESC,f.score DESC,f.id
-        LIMIT ? OFFSET ?
-        """,
-        (category, decision, page_size, (page - 1) * page_size),
-    )
-    return {
-        "items": [row_dict(row) for row in rows],
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-    }
+    result_job = latest_result_job()
+    if not result_job:
+        return {"items": [], "total": 0, "page": 1, "page_size": page_size}
+    page, page_size = max(1, page), min(max(page_size, 1), 100)
+    job_id = int(result_job["id"])
+    base = "m.status='active' AND m.last_scan_job_id=?"
+    if category == "quality":
+        where = base + " AND m.error IS NULL AND (m.manual_quality=1 OR NOT EXISTS(SELECT 1 FROM findings f WHERE f.media_id=m.id))"
+        params = (job_id,)
+        select = "SELECT m.id AS media_id,m.id,m.relative_path,m.size,m.width,m.height,m.captured_at,m.sharpness,m.brightness,m.manual_quality, CASE WHEN m.manual_quality=1 THEN 'Подтверждено вручную' ELSE 'Проблем не обнаружено' END AS reason, 0 AS suggested_best"
+        order = "m.relative_path"
+    else:
+        where = base + " AND f.category=? AND f.decision='pending'"
+        params = (job_id, category)
+        select = "SELECT f.*,m.relative_path,m.size,m.width,m.height,m.captured_at,m.sharpness,m.brightness,m.manual_quality"
+        order = "COALESCE(f.group_key,''),f.suggested_best DESC,f.score DESC,f.id"
+    total = database.one(f"SELECT COUNT(*) AS count FROM {'media m' if category == 'quality' else 'findings f JOIN media m ON m.id=f.media_id'} WHERE {where}", params)["count"]
+    rows = database.all(f"{select} FROM {'media m' if category == 'quality' else 'findings f JOIN media m ON m.id=f.media_id'} WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?", (*params, page_size, (page - 1) * page_size))
+    return {"items": [row_dict(row) for row in rows], "total": total, "page": page, "page_size": page_size}
 
 
 @app.post("/api/review/action", dependencies=[Depends(require_login)])
 def review_action(payload: ReviewAction):
     placeholders = ",".join("?" for _ in payload.finding_ids)
-    rows = database.all(
-        f"""
-        SELECT DISTINCT f.media_id FROM findings f
-        JOIN media m ON m.id=f.media_id
-        WHERE f.id IN ({placeholders}) AND m.status='active'
-        """,
-        tuple(payload.finding_ids),
-    )
+    rows = database.all(f"SELECT DISTINCT f.media_id,m.relative_path FROM findings f JOIN media m ON m.id=f.media_id WHERE f.id IN ({placeholders}) AND m.status='active'", tuple(payload.finding_ids))
     if not rows:
         raise HTTPException(404, "Выбранные фотографии не найдены")
     failures = []
@@ -268,25 +266,35 @@ def review_action(payload: ReviewAction):
                 failures.append({"media_id": row["media_id"], "error": str(exc)})
     else:
         with database.connect() as connection:
-            connection.execute(
-                f"UPDATE findings SET decision=? WHERE id IN ({placeholders})",
-                (payload.action, *payload.finding_ids),
-            )
+            media_ids = [int(row["media_id"]) for row in rows]
+            if payload.action == "quality":
+                media_marks = ",".join("?" for _ in media_ids)
+                connection.execute(f"UPDATE media SET manual_quality=1,updated_at=CURRENT_TIMESTAMP WHERE id IN ({media_marks})", tuple(media_ids))
+                connection.execute(f"UPDATE findings SET decision='quality' WHERE media_id IN ({media_marks})", tuple(media_ids))
+            else:
+                connection.execute(f"UPDATE findings SET decision=? WHERE id IN ({placeholders})", (payload.action, *payload.finding_ids))
             for row in rows:
-                media = connection.execute(
-                    "SELECT relative_path FROM media WHERE id=?", (row["media_id"],)
-                ).fetchone()
-                connection.execute(
-                    "INSERT INTO audit_log(action,relative_path,details) VALUES(?,?,?)",
-                    (payload.action, media["relative_path"], None),
-                )
+                connection.execute("INSERT INTO audit_log(action,relative_path,details) VALUES(?,?,?)", (payload.action, row["relative_path"], None))
     return {"ok": not failures, "failures": failures}
+
+
+@app.post("/api/media/transfer", dependencies=[Depends(require_login)])
+def transfer(payload: TransferRequest):
+    safe_folder(payload.destination)
+    completed, failures = [], []
+    for media_id in payload.media_ids:
+        try:
+            action = storage.copy_media if payload.operation == "copy" else storage.move_media
+            completed.append({"media_id": media_id, "path": action(media_id, payload.destination, payload.rename_on_conflict)})
+        except (OSError, ValueError) as exc:
+            failures.append({"media_id": media_id, "error": str(exc)})
+    status = 200 if not failures else 409
+    return JSONResponse({"completed": completed, "failures": failures}, status_code=status)
 
 
 @app.get("/thumbnail/{media_id}", dependencies=[Depends(require_login)])
 def thumbnail(media_id: int):
-    row = database.one("SELECT id FROM media WHERE id=?", (media_id,))
-    path = config.thumbnail_root / f"{media_id}.jpg"
+    row, path = database.one("SELECT id FROM media WHERE id=?", (media_id,)), config.thumbnail_root / f"{media_id}.jpg"
     if not row or not path.is_file():
         raise HTTPException(404, "Миниатюра не найдена")
     return FileResponse(path, media_type="image/jpeg")
@@ -297,12 +305,7 @@ def photo(media_id: int):
     row = database.one("SELECT * FROM media WHERE id=?", (media_id,))
     if not row:
         raise HTTPException(404, "Файл не найден")
-    root = config.quarantine_root if row["status"] == "quarantine" else config.photos_root
-    relative = (
-        row["quarantine_path"]
-        if row["status"] == "quarantine"
-        else row["relative_path"]
-    )
+    root, relative = (config.quarantine_root, row["quarantine_path"]) if row["status"] == "quarantine" else (config.photos_root, row["relative_path"])
     path = safe_path(root, relative)
     if not path.is_file() or path.is_symlink():
         raise HTTPException(404, "Файл не найден")
@@ -312,66 +315,46 @@ def photo(media_id: int):
 
 @app.get("/api/quarantine", dependencies=[Depends(require_login)])
 def quarantine():
-    rows = database.all(
-        """
-        SELECT id,relative_path,quarantine_path,size,captured_at,width,height
-        FROM media WHERE status='quarantine' ORDER BY updated_at DESC
-        """
-    )
-    total_size = sum(int(row["size"] or 0) for row in rows)
-    return {"items": [row_dict(row) for row in rows], "total_size": total_size}
+    rows = database.all("SELECT id,relative_path,quarantine_path,size,captured_at,width,height FROM media WHERE status='quarantine' ORDER BY updated_at DESC")
+    return {"items": [row_dict(row) for row in rows], "total_size": sum(int(row["size"] or 0) for row in rows)}
 
 
 @app.post("/api/quarantine/restore", dependencies=[Depends(require_login)])
 def restore(payload: MediaIds):
-    failures = []
-    restored = []
+    restored, failures = [], []
     for media_id in payload.media_ids:
         try:
-            restored.append(
-                storage.restore_media(media_id, payload.rename_on_conflict)
-            )
+            restored.append(storage.restore_media(media_id, payload.rename_on_conflict))
         except (OSError, ValueError) as exc:
             failures.append({"media_id": media_id, "error": str(exc)})
-    status = 200 if not failures else 409
-    return JSONResponse(
-        {"restored": restored, "failures": failures}, status_code=status
-    )
+    return JSONResponse({"restored": restored, "failures": failures}, status_code=200 if not failures else 409)
 
 
 @app.post("/api/quarantine/delete", dependencies=[Depends(require_login)])
 def delete_quarantine(payload: DeleteRequest):
     if payload.confirmation != "УДАЛИТЬ":
         raise HTTPException(400, "Введите слово УДАЛИТЬ для подтверждения")
-    failures = []
-    deleted = 0
+    deleted, failures = 0, []
     for media_id in payload.media_ids:
         try:
-            storage.delete_media(media_id)
-            deleted += 1
+            storage.delete_media(media_id); deleted += 1
         except (OSError, ValueError) as exc:
             failures.append({"media_id": media_id, "error": str(exc)})
     return {"deleted": deleted, "failures": failures}
 
 
 @app.get("/api/settings", dependencies=[Depends(require_login)])
-def get_settings():
-    return database.settings()
+def get_settings(): return database.settings()
 
 
 @app.post("/api/settings", dependencies=[Depends(require_login)])
-def save_settings(payload: SettingsRequest):
-    return database.save_settings(payload.model_dump())
+def save_settings(payload: SettingsRequest): return database.save_settings(payload.model_dump())
 
 
 @app.get("/api/audit", dependencies=[Depends(require_login)])
 def audit(limit: int = 100):
-    rows = database.all(
-        "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (min(max(limit, 1), 500),)
-    )
-    return {"items": [row_dict(row) for row in rows]}
+    return {"items": [row_dict(row) for row in database.all("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (min(max(limit, 1), 500),))]}
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+def health(): return {"status": "ok"}

@@ -1,351 +1,39 @@
-const state = {
-  category: "exact",
-  page: 1,
-  selected: new Set(),
-  quarantineSelected: new Set(),
-  latestJob: null,
-  photoItem: null,
-  photoMode: null,
-};
-const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => [...document.querySelectorAll(selector)];
+const $ = selector => document.querySelector(selector);
+const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const state = { category: "quality", page: 1, selected: new Set(), quarantineSelected: new Set(), latestJob: null, photoItem: null, photoMode: null, scanScope: "", picker: null, pickerPath: "", pickerCache: new Map(), transfer: null };
+const escapeHtml = value => String(value ?? "").replace(/[&<>'"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" }[c]));
+const bytes = value => value ? (value < 1024 * 1024 ? `${Math.round(value / 1024)} КБ` : `${(value / 1024 / 1024).toFixed(1)} МБ`) : "0 Б";
+const displayDate = value => value ? new Date(value).toLocaleDateString("ru-RU") : "—";
+function toast(message) { const target = $("#toast"); target.textContent = message; target.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => target.classList.remove("show"), 3400); }
+async function api(url, options = {}) { const response = await fetch(url, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options }); const data = await response.json().catch(() => ({})); if (!response.ok) { const error = new Error(data.detail || data.failures?.[0]?.error || "Не удалось выполнить действие"); error.data = data; error.status = response.status; throw error; } return data; }
+function showView(view) { $$(".view").forEach(node => node.classList.toggle("active", node.id === `view-${view}`)); $$(".nav-item").forEach(node => node.classList.toggle("active", node.dataset.view === view)); $("#sidebar").classList.remove("open"); if (view === "quarantine") loadQuarantine(); if (view === "settings") loadSettings(); if (view === "audit") loadAudit(); }
 
-async function api(url, options = {}) {
-  const response = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
-  if (response.status === 401) {
-    location.href = "/login";
-    throw new Error("Требуется вход");
-  }
-  let data = {};
-  try { data = await response.json(); } catch (_) {}
-  if (!response.ok) throw new Error(data.detail || data.failures?.[0]?.error || "Не удалось выполнить действие");
-  return data;
-}
+async function refreshSummary() { const data = await api("/api/summary"); state.latestJob = data.job; const counts = Object.fromEntries((data.categories || []).map(item => [item.category, item.count])); Object.keys(window.CATEGORIES).forEach(key => $(`#count-${key}`).textContent = counts[key] || 0); $("#count-quarantine").textContent = data.library.quarantine || 0; $("#statActive").textContent = data.library.active || 0; $("#statQuarantine").textContent = data.library.quarantine || 0; $("#statUnsupported").textContent = data.unsupported || 0; $("#statPending").textContent = Object.entries(counts).filter(([key]) => key !== "quality").reduce((sum, [, value]) => sum + value, 0); $("#passwordWarning").classList.toggle("hidden", !data.warning); renderJob(data.job); $("#queueGrid").innerHTML = Object.entries(window.CATEGORIES).map(([key, label]) => `<button class="queue-card" data-category="${key}"><span>${escapeHtml(label)}</span><strong>${counts[key] || 0}</strong></button>`).join(""); $$("#queueGrid button").forEach(button => button.onclick = () => openReview(button.dataset.category)); }
+function renderJob(job) { const active = job || { state: "—", message: "Анализ ещё не запускался", total: 0, processed: 0, errors: 0 }; $("#jobState").textContent = active.state; $("#jobMessage").textContent = active.message || ""; $("#jobNumbers").textContent = `${active.processed || 0} из ${active.total || 0}`; $("#jobErrors").textContent = active.errors ? `Ошибок: ${active.errors}` : ""; $("#jobProgress").style.width = `${active.total ? Math.min(100, (active.processed || 0) / active.total * 100) : 0}%`; $("#jobActions").innerHTML = ["queued", "running", "paused"].includes(active.state) ? (active.state === "paused" ? `<button class="button" data-job="resume">Продолжить</button>` : `<button class="button" data-job="pause">Пауза</button>`) + `<button class="button danger" data-job="cancel">Остановить</button>` : ""; $$("[data-job]").forEach(button => button.onclick = async () => { await api(`/api/jobs/${active.id}/${button.dataset.job}`, { method: "POST" }); refreshSummary(); }); }
+function openReview(category) { state.category = category; state.page = 1; state.selected.clear(); showView("review"); loadReview(); }
+function card(item, mode) { const mediaId = item.media_id || item.id; return `<article class="photo-card" data-id="${item.id}" data-media="${mediaId}"><input type="checkbox" aria-label="Выбрать"><button class="photo-open" type="button"><img class="thumb" src="/thumbnail/${mediaId}" alt=""></button>${item.suggested_best ? '<span class="best">Лучший кадр</span>' : ""}<div class="photo-info"><div class="path">${escapeHtml(item.relative_path)}</div><div class="reason">${escapeHtml(item.reason || "")}</div><div class="meta"><span>${displayDate(item.captured_at)}</span><span>${bytes(item.size)}</span></div></div></article>`; }
+function wireCards(root, selected, items, mode) { $$(".photo-card", $(root)).forEach((node, index) => { const item = items[index], checkbox = $("input", node); checkbox.onchange = () => { const key = mode === "review" ? Number(item.id) : Number(item.media_id || item.id); checkbox.checked ? selected.add(key) : selected.delete(key); node.classList.toggle("selected", checkbox.checked); }; $(".photo-open", node).onclick = () => openPhoto(item, mode); }); }
+async function loadReview() { const data = await api(`/api/review?category=${encodeURIComponent(state.category)}&page=${state.page}`); $("#reviewTitle").textContent = window.CATEGORIES[state.category]; $("#reviewSubtitle").textContent = data.total ? `Показано ${data.items.length} из ${data.total}. Только результаты последнего успешного анализа.` : "Последний анализ не нашёл файлов в этой категории."; $("#reviewCards").innerHTML = data.items.map(item => card(item, "review")).join(""); $("#reviewEmpty").classList.toggle("hidden", data.items.length !== 0); wireCards("#reviewCards", state.selected, data.items, "review"); const isQuality = state.category === "quality"; ["#actionQuality", "#actionKeep", "#actionLater", "#actionQuarantine"].forEach(selector => $(selector).classList.toggle("hidden", isQuality)); $("#pagination").innerHTML = data.total > data.page_size ? `<button class="button" ${data.page <= 1 ? "disabled" : ""} data-page="${data.page - 1}">Назад</button><span>${data.page}</span><button class="button" ${data.page * data.page_size >= data.total ? "disabled" : ""} data-page="${data.page + 1}">Далее</button>` : ""; $$("[data-page]").forEach(button => button.onclick = () => { state.page = Number(button.dataset.page); state.selected.clear(); loadReview(); }); }
+function openPhoto(item, mode) { state.photoItem = item; state.photoMode = mode; const mediaId = item.media_id || item.id; $("#photoDialogImage").src = `/photo/${mediaId}`; $("#photoDialogPath").textContent = item.relative_path || "Без названия"; $("#photoDialogReason").textContent = item.reason || (mode === "quarantine" ? "Файл находится в карантине" : "Причина не указана"); $("#photoDialogDate").textContent = displayDate(item.captured_at); $("#photoDialogSize").textContent = bytes(item.size); $("#photoDialogDimensions").textContent = `${item.width || "?"} × ${item.height || "?"}`; const reviewButtons = state.category === "quality" ? "" : `<button class="button" data-photo-action="quality">Считать качественной</button><button class="button" data-photo-action="later">Решить позже</button><button class="button primary" data-photo-action="keep">Оставить</button><button class="button danger" data-photo-action="quarantine">В карантин</button>`; $("#photoDialogActions").innerHTML = mode === "review" ? `<button class="button" data-photo-action="copy">Копировать</button><button class="button" data-photo-action="move">Перенести</button>${reviewButtons}` : `<button class="button primary" data-photo-action="restore">Восстановить</button>`; $$("[data-photo-action]", $("#photoDialogActions")).forEach(button => button.onclick = () => photoAction(button.dataset.photoAction)); $("#photoDialog").showModal(); }
+async function photoAction(action) { const item = state.photoItem; if (!item) return; if (action === "copy" || action === "move") return beginTransfer(action, [item.media_id || item.id]); if (action === "restore") { await restoreMediaIds([item.media_id || item.id]); $("#photoDialog").close(); return loadQuarantine(); } const data = await api("/api/review/action", { method: "POST", body: JSON.stringify({ finding_ids: [item.id], action }) }); if (data.failures?.length) throw new Error(data.failures[0].error); $("#photoDialog").close(); state.selected.delete(Number(item.id)); await loadReview(); await refreshSummary(); }
+async function reviewAction(action) { if (!state.selected.size) return toast("Сначала выберите фотографии"); await api("/api/review/action", { method: "POST", body: JSON.stringify({ finding_ids: [...state.selected], action }) }); state.selected.clear(); toast(action === "quality" ? "Фотографии подтверждены как качественные" : "Готово"); await loadReview(); refreshSummary(); }
 
-function toast(message) {
-  const node = $("#toast");
-  node.textContent = message;
-  node.classList.add("show");
-  clearTimeout(window.toastTimer);
-  window.toastTimer = setTimeout(() => node.classList.remove("show"), 3200);
-}
+async function openFolderPicker(mode, initial = "") { state.picker = mode; state.pickerPath = initial; state.pickerCache.clear(); $("#folderDialogTitle").textContent = mode === "scan" ? "Выберите папку для анализа" : "Выберите папку назначения"; $("#newFolderButton").classList.toggle("hidden", mode !== "transfer"); $("#folderNew").classList.add("hidden"); await renderPicker(initial); $("#folderDialog").showModal(); }
+async function folderData(path) { if (!state.pickerCache.has(path)) state.pickerCache.set(path, await api(`/api/folders?path=${encodeURIComponent(path)}`)); return state.pickerCache.get(path); }
+async function renderPicker(path) { const data = await folderData(path); state.pickerPath = data.path; $("#folderBreadcrumbs").innerHTML = data.breadcrumbs.map(item => `<button class="crumb" data-path="${escapeHtml(item.path)}">${escapeHtml(item.name)}</button>`).join("<span>›</span>"); $$(".crumb").forEach(button => button.onclick = () => renderPicker(button.dataset.path)); $("#folderCurrentPath").textContent = data.path || "Весь архив"; $("#folderEntries").innerHTML = data.directories.length ? data.directories.map(item => `<button class="folder-entry" data-path="${escapeHtml(item.path)}">📁 ${escapeHtml(item.name)}</button>`).join("") : '<p class="muted">В этой папке нет видимых подпапок.</p>'; $$(".folder-entry").forEach(button => button.onclick = () => renderPicker(button.dataset.path)); const treePaths = ["", ...data.breadcrumbs.slice(1).map(item => item.path), ...data.directories.map(item => item.path)]; $("#folderTree").innerHTML = [...new Set(treePaths)].map(item => `<button class="tree-item ${item === data.path ? "active" : ""}" data-path="${escapeHtml(item)}">${item ? "└ " + escapeHtml(item.split("/").at(-1)) : "📁 Архив"}</button>`).join(""); $$(".tree-item").forEach(button => button.onclick = () => renderPicker(button.dataset.path)); }
+$("#selectFolder").onclick = () => { const mode = state.picker, folder = state.pickerPath; $("#folderDialog").close(); if (mode === "scan") { state.scanScope = folder; $("#scanScope").value = folder; $("#scanScopeLabel").textContent = folder || "Весь архив"; $("#scanDialog").showModal(); } else { state.transfer.destination = folder; confirmTransfer(); } };
+$("#newFolderButton").onclick = () => $("#folderNew").classList.toggle("hidden");
+$("#createFolder").onclick = async () => { const name = $("#folderNewName").value.trim(); if (!name) return; try { const created = await api("/api/folders", { method: "POST", body: JSON.stringify({ parent: state.pickerPath, name }) }); state.pickerCache.clear(); $("#folderNewName").value = ""; $("#folderNew").classList.add("hidden"); await renderPicker(created.path); } catch (error) { toast(error.message); } };
+async function openScan() { state.scanScope = ""; $("#scanScope").value = ""; $("#scanScopeLabel").textContent = "Весь архив"; await openFolderPicker("scan", ""); }
+function beginTransfer(operation, mediaIds) { if (!mediaIds.length) return toast("Сначала выберите фотографии"); state.transfer = { operation, mediaIds, destination: "" }; openFolderPicker("transfer", ""); }
+function confirmTransfer() { const transfer = state.transfer; $("#transferTitle").textContent = transfer.operation === "copy" ? "Копировать в папку" : "Перенести в папку"; $("#transferDescription").textContent = `${transfer.operation === "copy" ? "Будет скопировано" : "Будет перенесено"} файлов: ${transfer.mediaIds.length}. Папка назначения: /${transfer.destination || ""}.`; $("#transferDialog").showModal(); }
+$("#transferConfirm").onclick = async () => { const transfer = state.transfer; try { await api("/api/media/transfer", { method: "POST", body: JSON.stringify({ ...transfer, rename_on_conflict: false }) }); $("#transferDialog").close(); $("#photoDialog").close(); state.selected.clear(); toast(transfer.operation === "copy" ? "Копирование завершено" : "Перенос завершён"); await loadReview(); refreshSummary(); } catch (error) { if (error.status === 409 && confirm(`${error.message}\n\nСоздать новые имена для совпадающих файлов?`)) { try { await api("/api/media/transfer", { method: "POST", body: JSON.stringify({ ...transfer, rename_on_conflict: true }) }); $("#transferDialog").close(); $("#photoDialog").close(); state.selected.clear(); toast("Операция завершена с новыми именами"); await loadReview(); refreshSummary(); } catch (retry) { toast(retry.message); } } else toast(error.message); } };
 
-function bytes(value) {
-  if (!value) return "0 Б";
-  const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
-  let number = value, unit = 0;
-  while (number >= 1024 && unit < units.length - 1) { number /= 1024; unit++; }
-  return `${number.toFixed(unit ? 1 : 0)} ${units[unit]}`;
-}
+async function loadQuarantine() { const data = await api("/api/quarantine"); state.quarantineSelected.clear(); $("#quarantineSummary").textContent = `${data.items.length} файлов, ${bytes(data.total_size)}. Их можно восстановить до окончательного удаления.`; $("#quarantineEmpty").classList.toggle("hidden", data.items.length !== 0); $("#quarantineCards").innerHTML = data.items.map(item => card(item, "quarantine")).join(""); wireCards("#quarantineCards", state.quarantineSelected, data.items, "quarantine"); }
+async function restoreMediaIds(mediaIds) { try { await api("/api/quarantine/restore", { method: "POST", body: JSON.stringify({ media_ids: mediaIds, rename_on_conflict: false }) }); toast("Файлы восстановлены"); } catch (error) { if (!confirm(`${error.message}\n\nВосстановить под новыми именами?`)) throw error; await api("/api/quarantine/restore", { method: "POST", body: JSON.stringify({ media_ids: mediaIds, rename_on_conflict: true }) }); toast("Файлы восстановлены под новыми именами"); } }
+async function loadSettings() { const data = await api("/api/settings"); Object.entries(data).forEach(([key, value]) => { if ($("#settingsForm").elements[key]) $("#settingsForm").elements[key].value = value; }); }
+async function loadAudit() { const data = await api("/api/audit"); const names = { quarantine:"В карантин", restore:"Восстановлен", delete:"Удалён", keep:"Оставлен", later:"Отложен", quality:"Подтверждено качество", copy:"Скопирован", move:"Перенесён" }; $("#auditRows").innerHTML = data.items.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${names[item.action] || escapeHtml(item.action)}</td><td>${escapeHtml(item.relative_path)}</td></tr>`).join(""); }
 
-function displayDate(value) {
-  if (!value) return "Не указана";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
-}
-
-function escapeHtml(value) {
-  const div = document.createElement("div");
-  div.textContent = value ?? "";
-  return div.innerHTML;
-}
-
-function showView(name) {
-  $$(".view").forEach(node => node.classList.toggle("active", node.id === `view-${name}`));
-  $$(".nav-item").forEach(node => node.classList.remove("active"));
-  document.querySelector(`[data-view="${name}"]`)?.classList.add("active");
-  $("#sidebar").classList.remove("open");
-  if (name === "dashboard") refreshSummary();
-  if (name === "quarantine") loadQuarantine();
-  if (name === "settings") loadSettings();
-  if (name === "audit") loadAudit();
-}
-
-async function refreshSummary() {
-  const data = await api("/api/summary");
-  const pending = data.categories.filter(x => x.decision === "pending").reduce((sum, x) => sum + x.count, 0);
-  $("#statActive").textContent = data.library.active || 0;
-  $("#statPending").textContent = pending;
-  $("#statQuarantine").textContent = data.library.quarantine || 0;
-  $("#count-quarantine").textContent = data.library.quarantine || 0;
-  $("#statUnsupported").textContent = data.unsupported || 0;
-  $("#passwordWarning").classList.toggle("hidden", !data.warning);
-
-  const map = Object.fromEntries(Object.keys(window.CATEGORIES).map(key => [key, 0]));
-  data.categories.filter(x => x.decision === "pending").forEach(x => map[x.category] = x.count);
-  Object.entries(map).forEach(([key, count]) => { $(`#count-${key}`).textContent = count; });
-  $("#queueGrid").innerHTML = Object.entries(window.CATEGORIES).map(([key, label]) => `
-    <button class="queue-card" data-category="${key}"><span>${escapeHtml(label)}</span><strong>${map[key]}</strong></button>
-  `).join("");
-  $$("#queueGrid .queue-card").forEach(node => node.onclick = () => openReview(node.dataset.category));
-  renderJob(data.job);
-}
-
-function renderJob(job) {
-  state.latestJob = job;
-  if (!job) return;
-  const names = { queued: "Ожидает", running: "Выполняется", paused: "Приостановлен", completed: "Завершён", cancelled: "Отменён", failed: "Ошибка" };
-  $("#jobState").textContent = names[job.state] || job.state;
-  $("#jobMessage").textContent = job.message || "—";
-  $("#jobNumbers").textContent = `${job.processed} из ${job.total} · пропущено ${job.skipped}`;
-  $("#jobErrors").textContent = job.errors ? `Ошибок: ${job.errors}` : "";
-  $("#jobProgress").style.width = `${job.total ? (job.processed / job.total) * 100 : 0}%`;
-  const actions = $("#jobActions");
-  actions.innerHTML = "";
-  if (job.state === "running") actions.innerHTML = `<button class="button" data-action="pause">Приостановить</button><button class="button danger" data-action="cancel">Отменить</button>`;
-  if (job.state === "paused") actions.innerHTML = `<button class="button primary" data-action="resume">Продолжить</button><button class="button danger" data-action="cancel">Отменить</button>`;
-  $$("[data-action]", actions).forEach(button => button.onclick = () => jobAction(button.dataset.action));
-}
-
-async function jobAction(action) {
-  try {
-    await api(`/api/jobs/${state.latestJob.id}/${action}`, { method: "POST" });
-    await refreshSummary();
-  } catch (error) { toast(error.message); }
-}
-
-async function openReview(category) {
-  state.category = category;
-  state.page = 1;
-  state.selected.clear();
-  showView("review");
-  await loadReview();
-}
-
-async function loadReview() {
-  const data = await api(`/api/review?category=${encodeURIComponent(state.category)}&page=${state.page}`);
-  $("#reviewTitle").textContent = window.CATEGORIES[state.category];
-  $("#reviewSubtitle").textContent = `${data.total} фотографий ожидают решения`;
-  $("#reviewEmpty").classList.toggle("hidden", data.items.length !== 0);
-  $("#reviewCards").innerHTML = data.items.map(item => photoCard(item, "review")).join("");
-  wireCards("#reviewCards", state.selected, data.items, "review");
-  const pages = Math.ceil(data.total / data.page_size);
-  $("#pagination").innerHTML = pages > 1 ? `
-    <button class="button" id="prevPage" ${state.page === 1 ? "disabled" : ""}>Назад</button>
-    <span>Страница ${state.page} из ${pages}</span>
-    <button class="button" id="nextPage" ${state.page === pages ? "disabled" : ""}>Далее</button>` : "";
-  $("#prevPage")?.addEventListener("click", () => { state.page--; state.selected.clear(); loadReview(); });
-  $("#nextPage")?.addEventListener("click", () => { state.page++; state.selected.clear(); loadReview(); });
-}
-
-function photoCard(item, mode) {
-  const findingId = item.id;
-  const mediaId = item.media_id || item.id;
-  const inputValue = mode === "review" ? findingId : mediaId;
-  return `<article class="photo-card" data-id="${inputValue}">
-    <input type="checkbox" value="${inputValue}" aria-label="Выбрать">
-    ${item.suggested_best ? '<span class="best">Предложено оставить</span>' : ""}
-    <button type="button" class="photo-open" aria-label="Открыть фотографию">
-      <img class="thumb" loading="lazy" src="/thumbnail/${mediaId}" alt="">
-    </button>
-    <div class="photo-info">
-      <div class="path">${escapeHtml(item.relative_path)}</div>
-      ${item.reason ? `<div class="reason">${escapeHtml(item.reason)}</div>` : ""}
-      <div class="meta"><span>${item.width || "?"}×${item.height || "?"}</span><span>${bytes(item.size)}</span></div>
-    </div>
-  </article>`;
-}
-
-function wireCards(container, selected, items, mode) {
-  const itemMap = new Map(items.map(item => [
-    Number(mode === "review" ? item.id : (item.media_id || item.id)),
-    item,
-  ]));
-  $$(`${container} .photo-card`).forEach(card => {
-    const checkbox = card.querySelector("input");
-    checkbox.onchange = () => {
-      const id = Number(checkbox.value);
-      checkbox.checked ? selected.add(id) : selected.delete(id);
-      card.classList.toggle("selected", checkbox.checked);
-    };
-    card.querySelector(".photo-open").onclick = () => {
-      const item = itemMap.get(Number(card.dataset.id));
-      if (item) openPhoto(item, mode);
-    };
-  });
-}
-
-function openPhoto(item, mode) {
-  const mediaId = item.media_id || item.id;
-  state.photoItem = item;
-  state.photoMode = mode;
-  const image = $("#photoDialogImage");
-  image.onerror = () => {
-    image.onerror = null;
-    image.src = `/thumbnail/${mediaId}`;
-  };
-  image.src = `/photo/${mediaId}`;
-  image.alt = item.relative_path || "Фотография";
-  $("#photoDialogPath").textContent = item.relative_path || "Без названия";
-  $("#photoDialogReason").textContent = item.reason || (mode === "quarantine" ? "Файл находится в карантине" : "Причина не указана");
-  $("#photoDialogDate").textContent = displayDate(item.captured_at);
-  $("#photoDialogSize").textContent = bytes(item.size);
-  $("#photoDialogDimensions").textContent = `${item.width || "?"} × ${item.height || "?"}`;
-  $("#photoDialogActions").innerHTML = mode === "review"
-    ? `<button class="button" type="button" data-photo-action="later">Решить позже</button>
-       <button class="button primary" type="button" data-photo-action="keep">Оставить</button>
-       <button class="button danger" type="button" data-photo-action="quarantine">В карантин</button>`
-    : `<button class="button primary" type="button" data-photo-action="restore">Восстановить</button>`;
-  $$("[data-photo-action]", $("#photoDialogActions")).forEach(button => {
-    button.onclick = () => photoAction(button.dataset.photoAction);
-  });
-  $("#photoDialog").showModal();
-}
-
-async function photoAction(action) {
-  const item = state.photoItem;
-  if (!item) return;
-  const buttons = $$("[data-photo-action]", $("#photoDialogActions"));
-  buttons.forEach(button => button.disabled = true);
-  try {
-    if (action === "restore") {
-      await restoreMediaIds([item.media_id || item.id]);
-      $("#photoDialog").close();
-      await loadQuarantine();
-    } else {
-      const data = await api("/api/review/action", {
-        method: "POST",
-        body: JSON.stringify({ finding_ids: [item.id], action }),
-      });
-      if (data.failures?.length) throw new Error(data.failures[0].error || "Не удалось обработать фотографию");
-      $("#photoDialog").close();
-      toast(action === "keep" ? "Фотография оставлена" : action === "later" ? "Решение отложено" : "Фотография перемещена в карантин");
-      state.selected.delete(Number(item.id));
-      await loadReview();
-    }
-    await refreshSummary();
-  } catch (error) {
-    toast(error.message);
-    buttons.forEach(button => button.disabled = false);
-  }
-}
-
-async function reviewAction(action) {
-  if (!state.selected.size) return toast("Сначала выберите фотографии");
-  try {
-    const data = await api("/api/review/action", { method: "POST", body: JSON.stringify({ finding_ids: [...state.selected], action }) });
-    if (data.failures?.length) toast(`Не обработано файлов: ${data.failures.length}`);
-    else toast("Готово");
-    state.selected.clear();
-    await loadReview();
-    await refreshSummary();
-  } catch (error) { toast(error.message); }
-}
-
-async function loadQuarantine() {
-  const data = await api("/api/quarantine");
-  state.quarantineSelected.clear();
-  $("#quarantineSummary").textContent = `${data.items.length} файлов, ${bytes(data.total_size)}. Их можно восстановить до окончательного удаления.`;
-  $("#quarantineEmpty").classList.toggle("hidden", data.items.length !== 0);
-  $("#quarantineCards").innerHTML = data.items.map(item => photoCard(item, "quarantine")).join("");
-  wireCards("#quarantineCards", state.quarantineSelected, data.items, "quarantine");
-}
-
-async function restoreMediaIds(mediaIds) {
-  try {
-    await api("/api/quarantine/restore", { method: "POST", body: JSON.stringify({ media_ids: mediaIds, rename_on_conflict: false }) });
-    toast("Файлы восстановлены");
-  } catch (error) {
-    if (confirm(`${error.message}\n\nВосстановить конфликтующие файлы под новым именем?`)) {
-      await api("/api/quarantine/restore", { method: "POST", body: JSON.stringify({ media_ids: mediaIds, rename_on_conflict: true }) });
-      toast("Файлы восстановлены под новыми именами");
-    } else {
-      throw error;
-    }
-  }
-}
-
-async function restoreSelected() {
-  if (!state.quarantineSelected.size) return toast("Сначала выберите фотографии");
-  try {
-    await restoreMediaIds([...state.quarantineSelected]);
-  } catch (error) { toast(error.message); }
-  await loadQuarantine();
-  await refreshSummary();
-}
-
-async function loadSettings() {
-  const data = await api("/api/settings");
-  const form = $("#settingsForm");
-  Object.entries(data).forEach(([key, value]) => { if (form.elements[key]) form.elements[key].value = value; });
-}
-
-async function loadAudit() {
-  const data = await api("/api/audit");
-  const actionNames = { quarantine: "В карантин", restore: "Восстановлен", delete: "Удалён", keep: "Оставлен", later: "Отложен" };
-  $("#auditRows").innerHTML = data.items.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${actionNames[item.action] || escapeHtml(item.action)}</td><td>${escapeHtml(item.relative_path)}</td></tr>`).join("");
-}
-
-async function openScan() {
-  try {
-    const folders = await api("/api/folders");
-    $("#folderSelect").innerHTML = folders.map(folder => `<option value="${escapeHtml(folder.path)}">${escapeHtml(folder.name)}</option>`).join("");
-    $("#scanDialog").showModal();
-  } catch (error) { toast(error.message); }
-}
-
-$$(".nav-item").forEach(button => button.onclick = () => button.dataset.view === "review" ? openReview(button.dataset.category) : showView(button.dataset.view));
-$("#menuButton").onclick = () => $("#sidebar").classList.toggle("open");
-$("#openScan").onclick = openScan;
-$$("[data-close]").forEach(button => button.onclick = () => button.closest("dialog").close());
-$$("dialog").forEach(dialog => dialog.addEventListener("click", event => {
-  if (event.target === dialog) dialog.close();
-}));
-$("#photoDialog").addEventListener("close", () => {
-  $("#photoDialogImage").removeAttribute("src");
-  state.photoItem = null;
-  state.photoMode = null;
-});
-$("#selectAll").onclick = () => $$("#reviewCards input").forEach(input => { input.checked = true; input.dispatchEvent(new Event("change")); });
-$("#actionKeep").onclick = () => reviewAction("keep");
-$("#actionLater").onclick = () => reviewAction("later");
-$("#actionQuarantine").onclick = () => reviewAction("quarantine");
-$("#restoreSelected").onclick = restoreSelected;
-$("#deleteSelected").onclick = () => {
-  if (!state.quarantineSelected.size) return toast("Сначала выберите фотографии");
-  $("#deleteDescription").textContent = `Будет безвозвратно удалено файлов: ${state.quarantineSelected.size}.`;
-  $("#confirmDialog").showModal();
-};
-$("#scanForm").onsubmit = async event => {
-  event.preventDefault();
-  const values = new FormData(event.target);
-  try {
-    await api("/api/jobs", { method: "POST", body: JSON.stringify({ scope: values.get("scope"), duplicate_scope: values.get("duplicate_scope") }) });
-    $("#scanDialog").close();
-    toast("Анализ запущен");
-    refreshSummary();
-  } catch (error) { toast(error.message); }
-};
-$("#confirmForm").onsubmit = async event => {
-  event.preventDefault();
-  const values = new FormData(event.target);
-  try {
-    await api("/api/quarantine/delete", { method: "POST", body: JSON.stringify({ media_ids: [...state.quarantineSelected], confirmation: values.get("confirmation") }) });
-    $("#confirmDialog").close();
-    event.target.reset();
-    toast("Выбранные файлы удалены");
-    await loadQuarantine();
-    await refreshSummary();
-  } catch (error) { toast(error.message); }
-};
-$("#settingsForm").onsubmit = async event => {
-  event.preventDefault();
-  const values = new FormData(event.target);
-  const payload = {
-    sensitivity: values.get("sensitivity"),
-    blur_threshold: Number(values.get("blur_threshold")),
-    dark_threshold: Number(values.get("dark_threshold")),
-    similar_distance: Number(values.get("similar_distance")),
-    ocr_min_chars: Number(values.get("ocr_min_chars")),
-  };
-  try { await api("/api/settings", { method: "POST", body: JSON.stringify(payload) }); toast("Настройки сохранены"); }
-  catch (error) { toast(error.message); }
-};
-
-refreshSummary();
-setInterval(() => {
-  if ($("#view-dashboard").classList.contains("active") && ["queued", "running"].includes(state.latestJob?.state)) refreshSummary();
-}, 2500);
+$$(".nav-item").forEach(button => button.onclick = () => button.dataset.view === "review" ? openReview(button.dataset.category) : showView(button.dataset.view)); $("#menuButton").onclick = () => $("#sidebar").classList.toggle("open"); $("#openScan").onclick = openScan; $("#chooseScanFolder").onclick = () => { $("#scanDialog").close(); openFolderPicker("scan", state.scanScope); }; $$("[data-close]").forEach(button => button.onclick = () => button.closest("dialog").close()); $$("dialog").forEach(dialog => dialog.addEventListener("click", event => { if (event.target === dialog) dialog.close(); })); $("#photoDialog").addEventListener("close", () => { $("#photoDialogImage").removeAttribute("src"); state.photoItem = null; }); $("#selectAll").onclick = () => $$("#reviewCards input").forEach(input => { input.checked = true; input.dispatchEvent(new Event("change")); }); $("#actionQuality").onclick = () => reviewAction("quality"); $("#actionKeep").onclick = () => reviewAction("keep"); $("#actionLater").onclick = () => reviewAction("later"); $("#actionQuarantine").onclick = () => reviewAction("quarantine"); $("#actionCopy").onclick = () => beginTransfer("copy", [...state.selected].map(Number)); $("#actionMove").onclick = () => beginTransfer("move", [...state.selected].map(Number)); $("#restoreSelected").onclick = async () => { if (!state.quarantineSelected.size) return toast("Сначала выберите фотографии"); try { await restoreMediaIds([...state.quarantineSelected]); await loadQuarantine(); refreshSummary(); } catch (error) { toast(error.message); } }; $("#deleteSelected").onclick = () => { if (!state.quarantineSelected.size) return toast("Сначала выберите фотографии"); $("#deleteDescription").textContent = `Будет безвозвратно удалено файлов: ${state.quarantineSelected.size}.`; $("#confirmDialog").showModal(); };
+$("#scanForm").onsubmit = async event => { event.preventDefault(); const values = new FormData(event.target); try { await api("/api/jobs", { method:"POST", body:JSON.stringify({ scope: values.get("scope"), duplicate_scope: values.get("duplicate_scope") }) }); $("#scanDialog").close(); toast("Анализ запущен"); refreshSummary(); } catch (error) { toast(error.message); } }; $("#confirmForm").onsubmit = async event => { event.preventDefault(); try { await api("/api/quarantine/delete", { method:"POST", body:JSON.stringify({ media_ids:[...state.quarantineSelected], confirmation:new FormData(event.target).get("confirmation") }) }); $("#confirmDialog").close(); event.target.reset(); toast("Выбранные файлы удалены"); await loadQuarantine(); refreshSummary(); } catch (error) { toast(error.message); } }; $("#settingsForm").onsubmit = async event => { event.preventDefault(); const form = new FormData(event.target); try { await api("/api/settings", { method:"POST", body:JSON.stringify({ sensitivity:form.get("sensitivity"), blur_threshold:Number(form.get("blur_threshold")), dark_threshold:Number(form.get("dark_threshold")), similar_distance:Number(form.get("similar_distance")), ocr_min_chars:Number(form.get("ocr_min_chars")) }) }); toast("Настройки сохранены"); } catch (error) { toast(error.message); } };
+refreshSummary(); setInterval(() => { if (["queued", "running"].includes(state.latestJob?.state)) refreshSummary(); }, 2500);

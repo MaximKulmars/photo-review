@@ -121,6 +121,21 @@ dialog fieldset { min-width: 0; }
 .photo-dialog-meta dt { color: var(--muted); }
 .photo-dialog-meta dd { margin: 0; text-align: right; }
 .photo-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: auto; padding-top: 20px; }
+.folder-choice { display: grid; gap: 8px; padding: 13px; border: 1px solid var(--line); border-radius: 9px; }
+.folder-choice span { color: var(--muted); font-size: 13px; }
+.folder-choice .button { justify-self: start; }
+.folder-dialog { width: min(900px, calc(100vw - 28px)); }
+.folder-breadcrumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 18px 0 12px; color: var(--muted); font-size: 13px; }
+.crumb { border: 0; background: transparent; color: var(--accent-dark); padding: 3px; text-decoration: underline; }
+.folder-browser { display: grid; grid-template-columns: 230px minmax(0, 1fr); min-height: 330px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.folder-tree { padding: 10px; background: #f1f4f1; border-right: 1px solid var(--line); overflow: auto; }
+.tree-item, .folder-entry { display: block; width: 100%; border: 0; background: transparent; padding: 9px 10px; border-radius: 7px; text-align: left; overflow-wrap: anywhere; }
+.tree-item:hover, .tree-item.active, .folder-entry:hover { background: var(--soft); color: var(--accent-dark); }
+.folder-entries { padding: 16px; overflow: auto; }
+.folder-entries > div { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px; }
+.folder-entry { border: 1px solid var(--line); background: white; }
+.folder-new { display: flex; gap: 8px; margin: 12px 0; }
+.folder-new input { min-width: 0; flex: 1; }
 .toast { position: fixed; right: 22px; bottom: 22px; max-width: 390px; background: #17221c; color: white; padding: 13px 18px; border-radius: 10px; transform: translateY(90px); opacity: 0; transition: .2s; z-index: 50; }
 .toast.show { transform: translateY(0); opacity: 1; }
 .login-body { display: grid; place-items: center; background: #e8eee9; padding: 20px; }
@@ -154,4 +169,6 @@ dialog fieldset { min-width: 0; }
   .photo-dialog-details { overflow: visible; padding: 18px; }
   .photo-dialog-path { margin-top: 18px; }
   .photo-dialog-actions .button { flex: 1 1 130px; }
+  .folder-browser { grid-template-columns: 1fr; min-height: 280px; }
+  .folder-tree { border-right: 0; border-bottom: 1px solid var(--line); max-height: 130px; }
 }

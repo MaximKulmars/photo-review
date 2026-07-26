@@ -40,6 +40,7 @@ KNOWN_UNSUPPORTED = {
 }
 
 CATEGORIES = {
+    "quality": "Качественные изображения",
     "exact": "Точные дубликаты",
     "similar": "Похожие фотографии",
     "blurry": "Размытые и некачественные",
@@ -277,6 +278,8 @@ class JobManager:
             )
             if not cursor.rowcount:
                 raise ValueError("Это действие сейчас недоступно")
+        if action == "cancel":
+            self._prune_jobs()
         self._wake.set()
 
     def _worker_loop(self) -> None:
@@ -342,7 +345,7 @@ class JobManager:
                 "UPDATE jobs SET message='Группировка дубликатов' WHERE id=?",
                 (job_id,),
             )
-            self._group_duplicates(job["scope"], job["duplicate_scope"], settings)
+            self._group_duplicates(job_id, job["scope"], job["duplicate_scope"], settings)
             self.db.execute(
                 """
                 UPDATE jobs SET state='completed', message='Готово',
@@ -350,6 +353,7 @@ class JobManager:
                 """,
                 (job_id,),
             )
+            self._prune_jobs()
         except Exception as exc:
             self.db.execute(
                 """
@@ -358,6 +362,19 @@ class JobManager:
                 """,
                 (str(exc)[:500], job_id),
             )
+            self._prune_jobs()
+
+    def _prune_jobs(self) -> None:
+        """Keep a compact execution history; media rows point only at the newest scan."""
+        with self.db.connect() as connection:
+            stale = connection.execute(
+                """
+                SELECT id FROM jobs WHERE state IN ('completed','failed','cancelled')
+                ORDER BY id DESC LIMIT -1 OFFSET 10
+                """
+            ).fetchall()
+            if stale:
+                connection.executemany("DELETE FROM jobs WHERE id=?", [(row["id"],) for row in stale])
 
     def _process_file(
         self, job_id: int, path: Path, settings: dict[str, Any]
@@ -376,6 +393,10 @@ class JobManager:
             and existing["status"] == "active"
             and not existing["error"]
         ):
+            self.db.execute(
+                "UPDATE media SET last_scan_job_id=? WHERE id=?",
+                (job_id, existing["id"]),
+            )
             self.db.execute(
                 "UPDATE jobs SET processed=processed+1, skipped=skipped+1 WHERE id=?",
                 (job_id,),
@@ -402,7 +423,8 @@ class JobManager:
                     UPDATE media SET size=?, mtime_ns=?, width=?, height=?,
                         captured_at=?, sha256=?, phash=?, brightness=?, sharpness=?,
                         edge_density=?, text_length=?, status='active',
-                        analysis_revision=?, error=NULL, updated_at=CURRENT_TIMESTAMP
+                        analysis_revision=?, last_scan_job_id=?, manual_quality=0,
+                        error=NULL, updated_at=CURRENT_TIMESTAMP
                     WHERE id=?
                     """,
                     (
@@ -417,7 +439,7 @@ class JobManager:
                         result["sharpness"],
                         result["edge_density"],
                         result["text_length"],
-                        revision,
+                        revision, job_id,
                         media_id,
                     ),
                 )
@@ -439,17 +461,18 @@ class JobManager:
                 self.db.execute(
                     """
                     UPDATE media SET size=?,mtime_ns=?,error=?,
-                        analysis_revision=?,updated_at=CURRENT_TIMESTAMP WHERE id=?
+                        analysis_revision=?,last_scan_job_id=?,manual_quality=0,
+                        updated_at=CURRENT_TIMESTAMP WHERE id=?
                     """,
-                    (stat.st_size, stat.st_mtime_ns, str(exc)[:500], revision, media_id),
+                    (stat.st_size, stat.st_mtime_ns, str(exc)[:500], revision, job_id, media_id),
                 )
             else:
                 self.db.execute(
                     """
-                    INSERT INTO media(relative_path,size,mtime_ns,error,analysis_revision)
-                    VALUES(?,?,?,?,?)
+                    INSERT INTO media(relative_path,size,mtime_ns,error,analysis_revision,last_scan_job_id,manual_quality)
+                    VALUES(?,?,?,?,?,?,0)
                     """,
-                    (relative, stat.st_size, stat.st_mtime_ns, str(exc)[:500], revision),
+                    (relative, stat.st_size, stat.st_mtime_ns, str(exc)[:500], revision, job_id),
                 )
             self.db.execute(
                 "UPDATE jobs SET processed=processed+1, errors=errors+1 WHERE id=?",
@@ -457,7 +480,7 @@ class JobManager:
             )
 
     def _group_duplicates(
-        self, scope: str, duplicate_scope: str, settings: dict[str, Any]
+        self, job_id: int, scope: str, duplicate_scope: str, settings: dict[str, Any]
     ) -> None:
         scope_prefix = f"{scope.rstrip('/')}/%" if scope else "%"
         if duplicate_scope == "scope":
@@ -495,7 +518,7 @@ class JobManager:
                     continue
                 best = self._best(group)
                 for row in group:
-                    if int(row["id"]) not in ids_in_scope:
+                    if int(row["id"]) not in ids_in_scope or row["manual_quality"]:
                         continue
                     connection.execute(
                         """
@@ -565,7 +588,7 @@ class JobManager:
                 best = self._best(group)
                 group_key = f"phash:{root}"
                 for row in group:
-                    if int(row["id"]) not in ids_in_scope:
+                    if int(row["id"]) not in ids_in_scope or row["manual_quality"]:
                         continue
                     connection.execute(
                         """

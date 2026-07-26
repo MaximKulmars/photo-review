@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS media (
     status TEXT NOT NULL DEFAULT 'active',
     quarantine_path TEXT,
     analysis_revision INTEGER NOT NULL DEFAULT 0,
+    last_scan_job_id INTEGER,
+    manual_quality INTEGER NOT NULL DEFAULT 0,
     error TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -101,6 +103,13 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(media)")}
+            if "last_scan_job_id" not in columns:
+                connection.execute("ALTER TABLE media ADD COLUMN last_scan_job_id INTEGER")
+            if "manual_quality" not in columns:
+                connection.execute(
+                    "ALTER TABLE media ADD COLUMN manual_quality INTEGER NOT NULL DEFAULT 0"
+                )
             for key, value in DEFAULT_SETTINGS.items():
                 connection.execute(
                     "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
@@ -165,4 +174,3 @@ class Database:
                 (json.dumps(revision),),
             )
         return self.settings()
-

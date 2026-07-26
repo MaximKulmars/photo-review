@@ -12,6 +12,7 @@ class Config:
     data_root: Path
     password: str
     session_secret: str
+    auth_enabled: bool
     port: int
 
     @property
@@ -39,6 +40,7 @@ def load_config() -> Config:
         session_secret=os.getenv(
             "PHOTO_REVIEW_SESSION_SECRET", "change-this-session-secret"
         ),
+        auth_enabled=os.getenv("PHOTO_REVIEW_AUTH_ENABLED", "true").lower()
+        in {"1", "true", "yes", "on"},
         port=int(os.getenv("PHOTO_REVIEW_PORT", "8080")),
     )
-

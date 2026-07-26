@@ -58,6 +58,19 @@ class AnalyzerTests(unittest.TestCase):
                 "SELECT * FROM findings WHERE category='exact'"
             )
             self.assertEqual(len(findings), 2)
+            self.assertEqual(
+                database.one("SELECT COUNT(*) AS count FROM media WHERE last_scan_job_id=?", (job_id,))["count"],
+                2,
+            )
+
+            second_job = database.execute(
+                "INSERT INTO jobs(scope,duplicate_scope,state) VALUES('','scope','queued')"
+            )
+            manager._run_job(second_job)
+            self.assertEqual(
+                database.one("SELECT COUNT(*) AS count FROM media WHERE last_scan_job_id=?", (second_job,))["count"],
+                2,
+            )
 
 
 if __name__ == "__main__":

@@ -105,6 +105,56 @@ class Storage:
             connection.execute("DELETE FROM media WHERE id=?", (media_id,))
         self._remove_empty_parents(path.parent)
 
+    def copy_media(self, media_id: int, destination_folder: str, rename_on_conflict: bool = False) -> str:
+        row, source, destination = self._transfer_paths(
+            media_id, destination_folder, rename_on_conflict
+        )
+        self._safe_copy(source, destination, row["sha256"])
+        relative = destination.relative_to(self.photos).as_posix()
+        self.db.execute(
+            "INSERT INTO audit_log(action,relative_path,details) VALUES(?,?,?)",
+            ("copy", row["relative_path"], relative),
+        )
+        return relative
+
+    def move_media(self, media_id: int, destination_folder: str, rename_on_conflict: bool = False) -> str:
+        row, source, destination = self._transfer_paths(
+            media_id, destination_folder, rename_on_conflict
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self._safe_move(source, destination, row["sha256"])
+        relative = destination.relative_to(self.photos).as_posix()
+        stat = destination.stat()
+        with self.db.connect() as connection:
+            connection.execute(
+                "UPDATE media SET relative_path=?, size=?, mtime_ns=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (relative, stat.st_size, stat.st_mtime_ns, media_id),
+            )
+            connection.execute(
+                "INSERT INTO audit_log(action,relative_path,details) VALUES(?,?,?)",
+                ("move", row["relative_path"], relative),
+            )
+        return relative
+
+    def _transfer_paths(self, media_id: int, destination_folder: str, rename_on_conflict: bool):
+        row = self.db.one("SELECT * FROM media WHERE id=? AND status='active'", (media_id,))
+        if not row:
+            raise FileNotFoundError("Фотография не найдена")
+        source = safe_path(self.photos, row["relative_path"])
+        if not source.is_file() or source.is_symlink():
+            raise FileNotFoundError("Исходный файл не найден")
+        folder = safe_path(self.photos, destination_folder)
+        if not folder.is_dir() or folder.is_symlink():
+            raise FileNotFoundError("Папка назначения не найдена")
+        destination = safe_path(self.photos, f"{destination_folder.rstrip('/')}/{source.name}" if destination_folder else source.name)
+        if destination == source:
+            raise ValueError("Исходная папка уже является папкой назначения")
+        if destination.exists():
+            if not rename_on_conflict:
+                raise FileExistsError("В папке назначения уже есть файл с таким именем")
+            destination = self._unique_destination(destination)
+        return row, source, destination
+
     def _safe_move(
         self, source: Path, destination: Path, expected_sha256: str | None
     ) -> None:
@@ -123,6 +173,22 @@ class Storage:
                 raise OSError("Контрольная сумма копии не совпала")
             os.replace(partial, destination)
             source.unlink()
+        finally:
+            if partial.exists():
+                partial.unlink()
+
+    def _safe_copy(
+        self, source: Path, destination: Path, expected_sha256: str | None
+    ) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        partial = destination.with_name(destination.name + ".partial")
+        try:
+            shutil.copy2(source, partial)
+            actual = self.checksum(partial)
+            expected = expected_sha256 or self.checksum(source)
+            if actual != expected:
+                raise OSError("Контрольная сумма копии не совпала")
+            os.replace(partial, destination)
         finally:
             if partial.exists():
                 partial.unlink()

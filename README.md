@@ -29,7 +29,7 @@
 1. `PHOTO_REVIEW_PHOTOS` — путь к вашему фотоархиву;
 2. `PHOTO_REVIEW_QUARANTINE` — отдельную папку карантина;
 3. `PHOTO_REVIEW_DATA` — где хранить базу, настройки и миниатюры;
-4. `PHOTO_REVIEW_PASSWORD` и `PHOTO_REVIEW_SESSION_SECRET` — уникальные секреты;
+4. `PHOTO_REVIEW_PASSWORD` и `PHOTO_REVIEW_SESSION_SECRET` — уникальные секреты. Для домашней сети вход можно отключить: `PHOTO_REVIEW_AUTH_ENABLED=false`;
 5. при необходимости — порт, часовой пояс, ограничение памяти и число ядер.
 
 Затем соберите и запустите приложение командой `docker compose up -d --build`,
