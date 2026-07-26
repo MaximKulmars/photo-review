@@ -292,6 +292,17 @@ def transfer(payload: TransferRequest):
     return JSONResponse({"completed": completed, "failures": failures}, status_code=status)
 
 
+@app.post("/api/media/quarantine", dependencies=[Depends(require_login)])
+def quarantine_media(payload: MediaIds):
+    moved, failures = [], []
+    for media_id in payload.media_ids:
+        try:
+            moved.append({"media_id": media_id, "path": storage.quarantine_media(media_id)})
+        except (OSError, ValueError) as exc:
+            failures.append({"media_id": media_id, "error": str(exc)})
+    return JSONResponse({"moved": moved, "failures": failures}, status_code=200 if not failures else 409)
+
+
 @app.get("/thumbnail/{media_id}", dependencies=[Depends(require_login)])
 def thumbnail(media_id: int):
     row, path = database.one("SELECT id FROM media WHERE id=?", (media_id,)), config.thumbnail_root / f"{media_id}.jpg"
