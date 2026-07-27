@@ -337,3 +337,11 @@ album = async (id, push = false) => {
   $("#albumTitle").textContent = current?.name || "Альбом";
   $("#albumCrumbs").textContent = `Фото · ${libraryShelf || ""}`;
 };
+const albumFolderTitleOpen = album;
+album = async (id, push = false) => {
+  await albumFolderTitleOpen(id, push);
+  const media = await api(`/api/library/media?container_id=${id}&page_size=1`);
+  if (media.items[0]?.container_name) {
+    $("#albumTitle").textContent = media.items[0].container_name;
+  }
+};

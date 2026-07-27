@@ -106,7 +106,8 @@ def install_library_api(
         rows = database.all(
             f"""
             SELECT id, relative_path, file_name, parent_relative_path, mime_type,
-              size, mtime_ns, captured_at, container_id
+              size, mtime_ns, captured_at, container_id,
+              (SELECT name FROM containers WHERE id=media.container_id) AS container_name
             FROM media WHERE {clause} ORDER BY relative_path
             LIMIT ? OFFSET ?
             """,
