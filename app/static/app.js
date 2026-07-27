@@ -345,3 +345,12 @@ album = async (id, push = false) => {
     $("#albumTitle").textContent = media.items[0].container_name;
   }
 };
+const galleryCloseOpen = openPhoto;
+openPhoto = (item, mode) => {
+  galleryCloseOpen(item, mode);
+  if (mode !== "library") return;
+  const stage = $(".gallery-stage");
+  stage.querySelector(".gallery-close")?.remove();
+  stage.insertAdjacentHTML("beforeend", '<button class="gallery-close" id="galleryClose" aria-label="Закрыть просмотр">×</button>');
+  $("#galleryClose").onclick = () => $("#photoDialog").close();
+};
