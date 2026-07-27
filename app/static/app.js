@@ -298,3 +298,18 @@ openPhoto = (item, mode) => {
   document.querySelectorAll("[data-gallery-index]").forEach(button => button.onclick = () => openPhoto(galleryItems[Number(button.dataset.galleryIndex)], "library"));
   preview.querySelector(".gallery-filmstrip .active")?.scrollIntoView({block: "nearest", inline: "center"});
 };
+const galleryStageOpen = openPhoto;
+openPhoto = (item, mode) => {
+  galleryStageOpen(item, mode);
+  if (mode !== "library") return;
+  const preview = $(".photo-dialog-preview");
+  const image = $("#photoDialogImage");
+  let stage = preview.querySelector(".gallery-stage");
+  if (!stage) { stage = document.createElement("div"); stage.className = "gallery-stage"; image.before(stage); stage.append(image); }
+  const menu = preview.querySelector(".gallery-dot-menu");
+  if (menu) stage.append(menu);
+  document.querySelectorAll(".gallery-filmstrip img").forEach((thumb, index) => {
+    const media = galleryItems[index];
+    if (media) thumb.src = `/photo/${media.id}`;
+  });
+};
