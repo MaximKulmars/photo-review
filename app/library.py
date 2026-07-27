@@ -2,7 +2,6 @@
 
 import mimetypes
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,7 +10,6 @@ from .db import Database
 
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
-YEAR_RE = re.compile(r"^[0-9]{4}$")
 
 
 @dataclass(frozen=True)
@@ -76,21 +74,16 @@ class LibraryIndexer:
             )
 
             for year_folder in self._visible_directories(root):
-                year_name = year_folder.name
-                if year_name == "Unsorted":
+                shelf_name = year_folder.name
+                if shelf_name == "Unsorted":
                     indexed += self._index_tree(
                         connection, root, year_folder, library_root, media_type,
                         extensions, None, seen_paths
                     )
                     continue
-                if not YEAR_RE.fullmatch(year_name):
-                    diagnostics.append(
-                        f"Папка '{year_name}' не является годом и не индексирована как полка"
-                    )
-                    continue
                 for child in self._visible_directories(year_folder):
                     container_id = self._upsert_container(
-                        connection, library_root, media_type, year_name, child, root
+                        connection, library_root, media_type, shelf_name, child, root
                     )
                     seen_containers.add(child.relative_to(root).as_posix())
                     containers += 1

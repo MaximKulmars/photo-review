@@ -138,9 +138,28 @@ async function reviewAction(action) {
   refreshSummary();
 }
 refreshSummary(); setInterval(() => { if (["queued", "running"].includes(state.latestJob?.state)) refreshSummary(); }, 2500);
-async function libraryShelves(){const d=await api("/api/library/shelves");$("#shelfGrid").innerHTML=d.items.map(x=>`<button class="shelf-card" data-year="${x.year}"><strong>${x.year}</strong><span>${x.album_count} альбомов · ${x.media_count} фото</span></button>`).join("");$("#photoShelves").innerHTML=d.items.map(x=>`<button class="nav-item" data-year="${x.year}">${x.year}</button>`).join("");$$("[data-year]").forEach(b=>b.onclick=()=>libraryYear(b.dataset.year));}
-async function libraryYear(year){$(".view.active").classList.remove("active");$("#view-photo-year").classList.add("active");$("#yearTitle").textContent=year;const d=await api("/api/library/albums?year="+encodeURIComponent(year));$("#albumGrid").innerHTML=d.items.map(x=>`<button class="album-card" data-album="${x.id}"><div class="album-cover">▧</div><strong>${x.name}</strong><span>${x.media_count} фото</span></button>`).join("");$$("[data-album]").forEach(b=>b.onclick=()=>libraryAlbum(b.dataset.album));}
-async function libraryAlbum(id){$(".view.active").classList.remove("active");$("#view-photo-album").classList.add("active");const d=await api("/api/library/media?container_id="+id);$("#libraryMedia").innerHTML=d.items.map(x=>`<article class="photo-card"><div class="thumb library-placeholder">▧</div><div class="photo-info"><div class="path">${x.file_name||x.relative_path}</div></div></article>`).join("");}
-$$(".top-tab").forEach(t=>t.onclick=async()=>{const s=t.dataset.section;$$(".top-tab").forEach(x=>x.classList.toggle("active",x===t));if(s==="photos"){ $(".view.active").classList.remove("active");$("#view-photo-home").classList.add("active");await libraryShelves();}else if(s==="videos"){$(".view.active").classList.remove("active");$("#view-videos").classList.add("active");}else{$(".view.active").classList.remove("active");$("#view-dashboard").classList.add("active");}});
-$("#rescanLibrary").onclick=async()=>{await api("/api/library/scan",{method:"POST",body:JSON.stringify({library_root:"photos"})});await libraryShelves();};
-$("#backToPhotos").onclick=()=>{ $(".view.active").classList.remove("active");$("#view-photo-home").classList.add("active");libraryShelves();};
+
+// Media-library cards use existing thumbnails and fall back to the original safely.
+const reviewOpenPhoto = openPhoto;
+openPhoto = function (item, mode) {
+  if (mode !== "library") return reviewOpenPhoto(item, mode);
+  state.photoItem = item;
+  state.photoMode = mode;
+  const mediaId = item.id;
+  $("#photoDialogImage").src = `/photo/${mediaId}`;
+  $("#photoDialogPath").textContent = item.relative_path || "Без названия";
+  $("#photoDialogReason").textContent = "Оригинал остаётся на месте";
+  $("#photoDialogDate").textContent = displayDate(item.captured_at);
+  $("#photoDialogSize").textContent = bytes(item.size);
+  $("#photoDialogDimensions").textContent = `${item.width || "?"} × ${item.height || "?"}`;
+  $("#photoDialogActions").innerHTML = "";
+  if (!$("#photoDialog").open) $("#photoDialog").showModal();
+};
+
+libraryAlbum = async function (id) {
+  $(".view.active").classList.remove("active");
+  $("#view-photo-album").classList.add("active");
+  const data = await api(`/api/library/media?container_id=${encodeURIComponent(id)}`);
+  $("#libraryMedia").innerHTML = data.items.map(item => `<article class="photo-card"><button class="photo-open" type="button" data-library-id="${item.id}"><img class="thumb" loading="lazy" src="/thumbnail/${item.id}" onerror="this.onerror=null;this.src='/photo/${item.id}'" alt="${escapeHtml(item.file_name || item.relative_path)}"></button><div class="photo-info"><div class="path">${escapeHtml(item.file_name || item.relative_path)}</div></div></article>`).join("");
+  $$('[data-library-id]').forEach(button => button.onclick = () => openPhoto(data.items.find(item => item.id === Number(button.dataset.libraryId)), "library"));
+};

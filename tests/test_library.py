@@ -1,4 +1,4 @@
-import tempfile
+﻿import tempfile
 import unittest
 from pathlib import Path
 
@@ -47,17 +47,28 @@ class LibraryIndexerTests(unittest.TestCase):
         self.assertEqual(photo["parent_relative_path"], "2024/Отпуск/От друзей")
         self.assertEqual(photo["index_state"], "indexed")
 
-    def test_rescan_marks_missing_and_reports_non_year_top_level_folder(self):
+    def test_indexes_named_and_range_shelves_without_moving_files(self):
+        named = self.root / "до 2013 года" / "Семья"
+        ranged = self.root / "2013-2017" / "Отпуск"
+        named.mkdir(parents=True)
+        ranged.mkdir(parents=True)
+        (named / "one.jpg").write_bytes(b"one")
+        (ranged / "two.jpg").write_bytes(b"two")
+        report = self.indexer.scan()
+        self.assertEqual(report.diagnostics, ())
+        self.assertEqual(report.containers, 2)
+        self.assertEqual([row["year"] for row in self.database.all("SELECT year FROM containers ORDER BY year")], ["2013-2017", "до 2013 года"])
+        self.assertEqual((named / "one.jpg").read_bytes(), b"one")
+    def test_rescan_marks_missing(self):
         path = self.root / "2024" / "photo.jpg"
         path.parent.mkdir()
         path.write_bytes(b"photo")
-        (self.root / "misc").mkdir()
         first = self.indexer.scan()
         path.unlink()
 
         report = self.indexer.scan()
 
-        self.assertTrue(first.diagnostics)
+        self.assertEqual(first.diagnostics, ())
         self.assertEqual(report.missing, 1)
         self.assertEqual(
             self.database.one(
