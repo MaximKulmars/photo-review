@@ -274,3 +274,27 @@ openPhoto = (item, mode) => {
   $("#galleryQuarantine").onclick = async () => { if (!confirm("Переместить фотографию в карантин?")) return; await quarantineMediaIds([item.id]); dialog.close(); };
   if (!dialog.open) dialog.showModal();
 };
+var galleryItems = [];
+var galleryIndex = -1;
+const albumWithGalleryItems = album;
+album = async function (id, push = false) {
+  await albumWithGalleryItems(id, push);
+  const data = await api(`/api/library/media?container_id=${id}`);
+  galleryItems = data.items;
+  document.querySelectorAll("[data-media]").forEach(button => button.onclick = () => openPhoto(galleryItems.find(item => item.id === Number(button.dataset.media)), "library"));
+};
+const galleryViewerOpen = openPhoto;
+openPhoto = (item, mode) => {
+  if (mode !== "library") return galleryViewerOpen(item, mode);
+  galleryIndex = galleryItems.findIndex(candidate => candidate.id === item.id);
+  if (galleryIndex < 0) { galleryItems = [item]; galleryIndex = 0; }
+  galleryViewerOpen(item, mode);
+  const preview = $(".photo-dialog-preview");
+  preview.querySelectorAll(".gallery-arrow,.gallery-filmstrip").forEach(node => node.remove());
+  const thumbButtons = galleryItems.map((candidate, index) => `<button class="${index === galleryIndex ? "active" : ""}" data-gallery-index="${index}" aria-label="Открыть фото ${index + 1}"><img src="/thumbnail/${candidate.id}" onerror="this.src='/photo/${candidate.id}'" alt=""></button>`).join("");
+  preview.insertAdjacentHTML("beforeend", `<button class="gallery-arrow prev" id="galleryPrevious" ${galleryIndex <= 0 ? "disabled" : ""} aria-label="Предыдущее фото">‹</button><button class="gallery-arrow next" id="galleryNext" ${galleryIndex >= galleryItems.length - 1 ? "disabled" : ""} aria-label="Следующее фото">›</button><nav class="gallery-filmstrip" aria-label="Фотографии альбома">${thumbButtons}</nav>`);
+  $("#galleryPrevious").onclick = () => openPhoto(galleryItems[galleryIndex - 1], "library");
+  $("#galleryNext").onclick = () => openPhoto(galleryItems[galleryIndex + 1], "library");
+  document.querySelectorAll("[data-gallery-index]").forEach(button => button.onclick = () => openPhoto(galleryItems[Number(button.dataset.galleryIndex)], "library"));
+  preview.querySelector(".gallery-filmstrip .active")?.scrollIntoView({block: "nearest", inline: "center"});
+};
