@@ -30,7 +30,7 @@ def install_library_api(
         rows = database.all(
             """
             SELECT substr(relative_path, 1, instr(relative_path || '/', '/') - 1) AS year,
-              COUNT(*) AS media_count
+              COUNT(*) AS media_count, MIN(id) AS cover_media_id
             FROM media
             WHERE library_root=? AND media_type=?
               AND index_state='indexed' AND status='active'
@@ -48,14 +48,14 @@ def install_library_api(
             (library_root, "photo" if library_root == "photos" else "video"),
         )
         album_counts = {row["year"]: row["album_count"] for row in containers}
-        media_counts = {row["year"]: row["media_count"] for row in rows}
+        media_counts = {row["year"]: row["media_count"] for row in rows}`n        cover_ids = {row["year"]: row["cover_media_id"] for row in rows}
         years = sorted(set(media_counts) | set(album_counts))
         return {
             "items": [
                 {
                     "year": year,
                     "media_count": media_counts.get(year, 0),
-                    "album_count": album_counts.get(year, 0),
+                    "album_count": album_counts.get(year, 0),`n                    "cover_media_id": cover_ids.get(year),
                 }
                 for year in years
             ]
@@ -66,7 +66,7 @@ def install_library_api(
         media_type = "photo" if library_root == "photos" else "video"
         rows = database.all(
             """
-            SELECT c.*, COUNT(m.id) AS media_count
+            SELECT c.*, COUNT(m.id) AS media_count, MIN(m.id) AS cover_media_id
             FROM containers c LEFT JOIN media m ON m.container_id=c.id
               AND m.index_state='indexed' AND m.status='active'
             WHERE c.library_root=? AND c.media_type=? AND c.year=?
