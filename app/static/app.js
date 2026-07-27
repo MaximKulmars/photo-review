@@ -329,3 +329,11 @@ openPhoto = (item, mode) => {
     }
   };
 };
+const albumTitleOpen = album;
+album = async (id, push = false) => {
+  await albumTitleOpen(id, push);
+  const data = await api(`/api/library/albums?year=${encodeURIComponent(libraryShelf)}`);
+  const current = data.items.find(item => item.id === id);
+  $("#albumTitle").textContent = current?.name || "Альбом";
+  $("#albumCrumbs").textContent = `Фото · ${libraryShelf || ""}`;
+};
