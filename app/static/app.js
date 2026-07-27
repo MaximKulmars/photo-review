@@ -257,3 +257,20 @@ openPhoto = (item, mode) => {
 const galleryToolbar = $("#rescanLibrary").parentElement;
 galleryToolbar.insertAdjacentHTML("beforeend", '<button class="button" id="gallerySorting">К сортировке</button>');
 $("#gallerySorting").onclick = () => document.querySelector("[data-section=sorting]").click();
+const galleryMenuOpen = openPhoto;
+openPhoto = (item, mode) => {
+  if (mode !== "library") { $("#photoDialog").classList.remove("gallery-mode"); return galleryMenuOpen(item, mode); }
+  const dialog = $("#photoDialog");
+  dialog.classList.add("gallery-mode");
+  $("#photoDialogImage").src = `/photo/${item.id}`;
+  $("#photoDialogPath").textContent = item.relative_path;
+  $("#photoDialogReason").textContent = "Оригинал остаётся на месте";
+  $("#photoDialogActions").innerHTML = "";
+  $(".photo-dialog-preview").querySelectorAll(".gallery-dot-menu,.gallery-popover").forEach(node => node.remove());
+  $(".photo-dialog-preview").insertAdjacentHTML("beforeend", `<button class="gallery-dot-menu" id="galleryDotMenu" aria-label="Действия с фотографией">⋯</button><section class="gallery-popover hidden" id="galleryPopover"><div class="path">${escapeHtml(item.relative_path)}</div><div class="meta"><span>${displayDate(item.captured_at)}</span><span>${bytes(item.size)}</span></div><div class="button-row"><button class="button" id="galleryCopy">Копировать</button><button class="button" id="galleryMove">Переместить</button><button class="button danger" id="galleryQuarantine">В карантин</button><a class="button" href="/photo/${item.id}" target="_blank" rel="noopener">Оригинал</a></div></section>`);
+  $("#galleryDotMenu").onclick = () => $("#galleryPopover").classList.toggle("hidden");
+  $("#galleryCopy").onclick = () => beginTransfer("copy", [item.id]);
+  $("#galleryMove").onclick = () => beginTransfer("move", [item.id]);
+  $("#galleryQuarantine").onclick = async () => { if (!confirm("Переместить фотографию в карантин?")) return; await quarantineMediaIds([item.id]); dialog.close(); };
+  if (!dialog.open) dialog.showModal();
+};
