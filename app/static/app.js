@@ -242,3 +242,18 @@ async function home(p=false){if(p)route(null,null,true);activateView("photo-home
 async function shelf(s,p=false){libraryShelf=s;if(p)route(s,null,true);activateView("photo-year");$("#yearTitle").textContent=s;const d=await api(`/api/library/albums?year=${encodeURIComponent(s)}`);$("#albumGrid").innerHTML=d.items.map(i=>`<button class="album-card" data-album="${i.id}"><div class="album-cover">${i.cover_media_id?`<img src="/thumbnail/${i.cover_media_id}" onerror="this.src='/photo/${i.cover_media_id}'">`:""}</div><strong>${escapeHtml(i.name)}</strong><span>${i.media_count} фото</span></button>`).join("");document.querySelectorAll("[data-album]").forEach(b=>b.onclick=()=>album(+b.dataset.album,true))}
 async function album(id,p=false){if(p)route(libraryShelf,id,true);activateView("photo-album");const d=await api(`/api/library/media?container_id=${id}`);$("#libraryMedia").innerHTML=d.items.map(i=>`<article class="photo-card"><button class="photo-open" data-media="${i.id}"><img class="thumb" src="/thumbnail/${i.id}" onerror="this.src='/photo/${i.id}'"></button><div class="photo-info"><div class="path">${escapeHtml(i.file_name)}</div></div></article>`).join("");document.querySelectorAll("[data-media]").forEach(b=>b.onclick=()=>openPhoto(d.items.find(i=>i.id===+b.dataset.media),"library"))}
 window.onpopstate=()=>{const q=new URLSearchParams(location.hash.slice(1)),s=q.get("shelf"),a=+q.get("album");s&&a?(libraryShelf=s,album(a)):s?shelf(s):home()};$("#backToPhotos").onclick=()=>home(true);$("#backToYear").onclick=()=>shelf(libraryShelf,true);const oldOpen=openPhoto;openPhoto=(i,m)=>{if(m!=="library")return oldOpen(i,m);$("#photoDialogImage").src=`/photo/${i.id}`;$("#photoDialogPath").textContent=i.relative_path;$("#photoDialogReason").textContent="Оригинал остаётся на месте";$("#photoDialogActions").innerHTML=`<a class="button" href="/photo/${i.id}" target="_blank">Открыть оригинал</a><button class="button" id="closeLibraryPhoto">Закрыть</button>`;$("#closeLibraryPhoto").onclick=()=>$("#photoDialog").close();$("#photoDialog").showModal()};if(!location.hash)route(null,null,false);home();
+const galleryPhotoOpen = openPhoto;
+openPhoto = (item, mode) => {
+  if (mode !== "library") return galleryPhotoOpen(item, mode);
+  $("#photoDialogImage").src = `/photo/${item.id}`;
+  $("#photoDialogPath").textContent = item.relative_path;
+  $("#photoDialogReason").textContent = "Оригинал остаётся на месте";
+  $("#photoDialogActions").innerHTML = `<button class="button" id="galleryCopy">Копировать</button><button class="button" id="galleryMove">Переместить</button><button class="button danger" id="galleryQuarantine">В карантин</button><a class="button" href="/photo/${item.id}" target="_blank" rel="noopener">Открыть оригинал</a>`;
+  $("#galleryCopy").onclick = () => beginTransfer("copy", [item.id]);
+  $("#galleryMove").onclick = () => beginTransfer("move", [item.id]);
+  $("#galleryQuarantine").onclick = async () => { if (!confirm("Переместить фотографию в карантин?")) return; await quarantineMediaIds([item.id]); $("#photoDialog").close(); await album(new URLSearchParams(location.hash.slice(1)).get("album")); };
+  if (!$("#photoDialog").open) $("#photoDialog").showModal();
+};
+const galleryToolbar = $("#rescanLibrary").parentElement;
+galleryToolbar.insertAdjacentHTML("beforeend", '<button class="button" id="gallerySorting">К сортировке</button>');
+$("#gallerySorting").onclick = () => document.querySelector("[data-section=sorting]").click();
