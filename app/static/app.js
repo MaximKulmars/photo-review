@@ -163,3 +163,76 @@ libraryAlbum = async function (id) {
   $("#libraryMedia").innerHTML = data.items.map(item => `<article class="photo-card"><button class="photo-open" type="button" data-library-id="${item.id}"><img class="thumb" loading="lazy" src="/thumbnail/${item.id}" onerror="this.onerror=null;this.src='/photo/${item.id}'" alt="${escapeHtml(item.file_name || item.relative_path)}"></button><div class="photo-info"><div class="path">${escapeHtml(item.file_name || item.relative_path)}</div></div></article>`).join("");
   $$('[data-library-id]').forEach(button => button.onclick = () => openPhoto(data.items.find(item => item.id === Number(button.dataset.libraryId)), "library"));
 };
+
+// Single, deterministic navigation for the media library.
+function activateView(view) {
+  $$(".view").forEach(node => node.classList.remove("active"));
+  const target = $(`#view-${view}`);
+  if (target) target.classList.add("active");
+}
+function setActiveLibraryNav(selector) {
+  $$("#photoNav .nav-item").forEach(node => node.classList.remove("active"));
+  const current = selector && $(selector);
+  if (current) current.classList.add("active");
+}
+async function loadLibraryShelves() {
+  const data = await api("/api/library/shelves");
+  const items = data.items || [];
+  $("#shelfGrid").innerHTML = items.map(item => `<button class="shelf-card" data-shelf="${escapeHtml(item.year)}"><strong>${escapeHtml(item.year)}</strong><span>${item.album_count} альбомов · ${item.media_count} фото</span></button>`).join("");
+  $("#photoShelves").innerHTML = items.map(item => `<button class="nav-item" data-shelf="${escapeHtml(item.year)}">${escapeHtml(item.year)}</button>`).join("");
+  $("#photoEmpty").classList.toggle("hidden", items.length > 0);
+  $$('[data-shelf]').forEach(button => button.onclick = () => openLibraryShelf(button.dataset.shelf));
+}
+async function openLibraryShelf(shelf) {
+  activateView("photo-year");
+  $("#yearTitle").textContent = shelf;
+  $("#yearCrumbs").textContent = `Фото · ${shelf}`;
+  setActiveLibraryNav(null);
+  const data = await api(`/api/library/albums?year=${encodeURIComponent(shelf)}`);
+  $("#albumGrid").innerHTML = data.items.map(item => `<button class="album-card" data-album-id="${item.id}"><div class="album-cover">▧</div><strong>${escapeHtml(item.name)}</strong><span>${item.media_count} фото</span></button>`).join("");
+  $$('[data-album-id]').forEach(button => button.onclick = () => openLibraryAlbum(Number(button.dataset.albumId), shelf));
+}
+async function openLibraryAlbum(id, shelf) {
+  activateView("photo-album");
+  $("#albumCrumbs").textContent = `Фото · ${shelf}`;
+  const data = await api(`/api/library/media?container_id=${id}`);
+  $("#libraryMedia").innerHTML = data.items.map(item => `<article class="photo-card"><button class="photo-open" type="button" data-library-media="${item.id}"><img class="thumb" loading="lazy" src="/thumbnail/${item.id}" onerror="this.onerror=null;this.src='/photo/${item.id}'" alt="${escapeHtml(item.file_name || item.relative_path)}"></button><div class="photo-info"><div class="path">${escapeHtml(item.file_name || item.relative_path)}</div></div></article>`).join("");
+  $$('[data-library-media]').forEach(button => button.onclick = () => openPhoto(data.items.find(item => item.id === Number(button.dataset.libraryMedia)), "library"));
+}
+function openPhotoHome() {
+  activateView("photo-home");
+  setActiveLibraryNav('[data-library-view="photo-home"]');
+  loadLibraryShelves().catch(error => toast(error.message));
+}
+function openSortingView(view = "dashboard") {
+  activateView(view);
+  $("#photoNav").classList.add("hidden");
+  $("#sortingNav").classList.remove("hidden");
+  $$("#sortingNav .nav-item").forEach(node => node.classList.toggle("active", node.dataset.view === view));
+}
+$$(".top-tab").forEach(tab => tab.onclick = () => {
+  $$(".top-tab").forEach(item => item.classList.toggle("active", item === tab));
+  if (tab.dataset.section === "photos") {
+    $("#photoNav").classList.remove("hidden");
+    $("#sortingNav").classList.add("hidden");
+    openPhotoHome();
+  } else if (tab.dataset.section === "videos") {
+    $("#photoNav").addClass?.("hidden");
+    $("#photoNav").classList.add("hidden");
+    $("#sortingNav").classList.add("hidden");
+    activateView("videos");
+  } else {
+    openSortingView();
+  }
+});
+$$("#sortingNav .nav-item").forEach(button => button.onclick = () => {
+  if (button.dataset.view === "review") openReview(button.dataset.category);
+  else openSortingView(button.dataset.view);
+});
+$("#backToPhotos").onclick = openPhotoHome;
+$("#backToYear").onclick = () => openPhotoHome();
+$("#rescanLibrary").onclick = async () => {
+  try { await api("/api/library/scan", { method: "POST", body: JSON.stringify({library_root: "photos"}) }); await loadLibraryShelves(); toast("Индекс обновлён"); }
+  catch (error) { toast(error.message); }
+};
+openPhotoHome();
