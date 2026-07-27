@@ -1,12 +1,15 @@
 ﻿from __future__ import annotations
 
 import mimetypes
+from io import BytesIO
+
+from PIL import Image, ImageOps
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -331,6 +334,24 @@ def photo(media_id: int):
     media_type, _ = mimetypes.guess_type(path.name)
     return FileResponse(path, media_type=media_type or "application/octet-stream")
 
+
+@app.get("/library-preview/{media_id}", dependencies=[Depends(require_login)])
+def library_preview(media_id: int):
+    row = database.one("SELECT * FROM media WHERE id=?", (media_id,))
+    if not row or row["status"] != "active":
+        raise HTTPException(404, "Файл не найден")
+    path = safe_path(config.photos_root, row["relative_path"])
+    if not path.is_file() or path.is_symlink():
+        raise HTTPException(404, "Файл не найден")
+    try:
+        with Image.open(path) as image:
+            preview = ImageOps.exif_transpose(image).convert("RGB")
+            preview.thumbnail((520, 360), Image.Resampling.LANCZOS)
+            output = BytesIO()
+            preview.save(output, format="JPEG", quality=88, optimize=True)
+    except OSError as exc:
+        raise HTTPException(415, "Невозможно создать миниатюру") from exc
+    return Response(output.getvalue(), media_type="image/jpeg")
 
 @app.get("/api/quarantine", dependencies=[Depends(require_login)])
 def quarantine():

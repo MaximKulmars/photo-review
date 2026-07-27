@@ -313,3 +313,19 @@ openPhoto = (item, mode) => {
     if (media) thumb.src = `/photo/${media.id}`;
   });
 };
+const galleryPreviewOpen = openPhoto;
+openPhoto = (item, mode) => {
+  galleryPreviewOpen(item, mode);
+  if (mode !== "library") return;
+  const strip = $(".gallery-filmstrip");
+  document.querySelectorAll(".gallery-filmstrip img").forEach((thumb, index) => {
+    const media = galleryItems[index];
+    if (media) thumb.src = `/library-preview/${media.id}`;
+  });
+  strip.onwheel = event => {
+    if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+      strip.scrollLeft += event.deltaY;
+      event.preventDefault();
+    }
+  };
+};
