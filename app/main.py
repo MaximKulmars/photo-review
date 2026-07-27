@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import mimetypes
 from contextlib import asynccontextmanager
@@ -15,6 +15,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from .analyzer import CATEGORIES, JobManager
 from .config import Config, load_config
 from .db import Database
+from .library import LibraryIndexer
+from .library_api import install_library_api
 from .security import password_matches, safe_path
 from .storage import Storage
 
@@ -23,12 +25,16 @@ config: Config = load_config()
 database = Database(config.database_path)
 storage = Storage(config.photos_root, config.quarantine_root, database)
 jobs = JobManager(database, config.photos_root, config.thumbnail_root)
+library_indexer = LibraryIndexer(database, config.library_roots)
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    for path in (config.photos_root, config.quarantine_root, config.data_root, config.thumbnail_root, config.model_root):
+    roots = [config.photos_root, config.quarantine_root, config.data_root, config.thumbnail_root, config.model_root]
+    if config.videos_root is not None:
+        roots.append(config.videos_root)
+    for path in roots:
         path.mkdir(parents=True, exist_ok=True)
     database.initialize()
     jobs.start_worker()
@@ -44,6 +50,8 @@ def require_login(request: Request) -> None:
     if config.auth_enabled and request.session.get("authenticated") is not True:
         raise HTTPException(status_code=401, detail="Требуется вход")
 
+
+install_library_api(app, database, library_indexer, require_login)
 
 def row_dict(row) -> dict:
     return {key: row[key] for key in row.keys()}

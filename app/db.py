@@ -4,84 +4,16 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-
-SCHEMA = """
-PRAGMA journal_mode=WAL;
-PRAGMA foreign_keys=ON;
-
-CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS media (
-    id INTEGER PRIMARY KEY,
-    relative_path TEXT NOT NULL UNIQUE,
-    size INTEGER NOT NULL,
-    mtime_ns INTEGER NOT NULL,
-    width INTEGER,
-    height INTEGER,
-    captured_at TEXT,
-    sha256 TEXT,
-    phash TEXT,
-    brightness REAL,
-    sharpness REAL,
-    edge_density REAL,
-    text_length INTEGER DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'active',
-    quarantine_path TEXT,
-    analysis_revision INTEGER NOT NULL DEFAULT 0,
-    last_scan_job_id INTEGER,
-    manual_quality INTEGER NOT NULL DEFAULT 0,
-    error TEXT,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS media_hash_idx ON media(sha256);
-CREATE INDEX IF NOT EXISTS media_status_idx ON media(status);
-CREATE INDEX IF NOT EXISTS media_phash_idx ON media(phash);
-
-CREATE TABLE IF NOT EXISTS findings (
-    id INTEGER PRIMARY KEY,
-    media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    category TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    score REAL NOT NULL DEFAULT 0,
-    group_key TEXT,
-    suggested_best INTEGER NOT NULL DEFAULT 0,
-    decision TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(media_id, category, group_key)
-);
-CREATE INDEX IF NOT EXISTS findings_queue_idx
-    ON findings(category, decision);
-
-CREATE TABLE IF NOT EXISTS jobs (
-    id INTEGER PRIMARY KEY,
-    scope TEXT NOT NULL,
-    duplicate_scope TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'queued',
-    total INTEGER NOT NULL DEFAULT 0,
-    processed INTEGER NOT NULL DEFAULT 0,
-    skipped INTEGER NOT NULL DEFAULT 0,
-    unsupported INTEGER NOT NULL DEFAULT 0,
-    errors INTEGER NOT NULL DEFAULT 0,
-    message TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    started_at TEXT,
-    finished_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS audit_log (
-    id INTEGER PRIMARY KEY,
-    action TEXT NOT NULL,
-    relative_path TEXT NOT NULL,
-    details TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-"""
+from .migrations import (
+    LATEST_SCHEMA_VERSION,
+    detect_schema_version,
+    migrate,
+    rollback,
+)
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -98,23 +30,84 @@ class Database:
     def __init__(self, path: Path):
         self.path = path
         self._local = threading.local()
+        self.last_migration_backup: Path | None = None
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.connect() as connection:
-            connection.executescript(SCHEMA)
-            columns = {row["name"] for row in connection.execute("PRAGMA table_info(media)")}
-            if "last_scan_job_id" not in columns:
-                connection.execute("ALTER TABLE media ADD COLUMN last_scan_job_id INTEGER")
-            if "manual_quality" not in columns:
-                connection.execute(
-                    "ALTER TABLE media ADD COLUMN manual_quality INTEGER NOT NULL DEFAULT 0"
-                )
+        connection = sqlite3.connect(self.path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute("PRAGMA journal_mode=WAL")
+            current_version = detect_schema_version(connection)
+            if current_version < LATEST_SCHEMA_VERSION:
+                if current_version:
+                    self.last_migration_backup = self.create_backup(
+                        f"pre-migration-v{current_version}-to-v{LATEST_SCHEMA_VERSION}"
+                    )
+                migrate(connection, current_version)
             for key, value in DEFAULT_SETTINGS.items():
                 connection.execute(
                     "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
                     (key, json.dumps(value, ensure_ascii=False)),
                 )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def schema_version(self) -> int:
+        with self.connect() as connection:
+            return detect_schema_version(connection)
+
+    def create_backup(self, reason: str = "manual") -> Path:
+        if not self.path.is_file():
+            raise FileNotFoundError("База данных ещё не создана")
+        safe_reason = "".join(
+            character if character.isalnum() or character in {"-", "_"} else "-"
+            for character in reason
+        ).strip("-") or "manual"
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        destination = (
+            self.path.parent
+            / "backups"
+            / f"{self.path.stem}-{safe_reason}-{timestamp}{self.path.suffix}"
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source = sqlite3.connect(self.path, timeout=30)
+        target = sqlite3.connect(destination)
+        try:
+            source.backup(target)
+            integrity = target.execute("PRAGMA integrity_check").fetchone()[0]
+            if integrity != "ok":
+                raise sqlite3.DatabaseError(
+                    f"Проверка резервной копии завершилась ошибкой: {integrity}"
+                )
+        finally:
+            target.close()
+            source.close()
+        return destination
+
+    def rollback_schema(
+        self, target_version: int, *, backup: bool = True
+    ) -> Path | None:
+        current_version = self.schema_version()
+        backup_path = (
+            self.create_backup(
+                f"pre-rollback-v{current_version}-to-v{target_version}"
+            )
+            if backup
+            else None
+        )
+        connection = sqlite3.connect(self.path, timeout=30)
+        try:
+            connection.execute("PRAGMA foreign_keys=ON")
+            rollback(connection, current_version, target_version)
+        finally:
+            connection.close()
+        return backup_path
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -123,6 +116,10 @@ class Database:
         connection.execute("PRAGMA foreign_keys=ON")
         try:
             yield connection
+        except Exception:
+            connection.rollback()
+            raise
+        else:
             connection.commit()
         finally:
             connection.close()
