@@ -491,6 +491,23 @@ album = async (id, push = false) => {
   await albumPagedOpen(id, push);
   await loadAlbumPage(true);
 };
+const albumPagingGalleryOpen = openPhoto;
+openPhoto = (item, mode) => {
+  if (mode !== "library") return albumPagingGalleryOpen(item, mode);
+  if (!item) return;
+  if (albumPaging.items.length) galleryItems = albumPaging.items;
+  albumPagingGalleryOpen(item, mode);
+  const next = $("#galleryNext");
+  const canLoadMore = albumPaging.id && albumPaging.items.length < albumPaging.total;
+  if (next && canLoadMore && galleryIndex >= galleryItems.length - 1) {
+    next.disabled = false;
+    next.onclick = async () => {
+      await loadAlbumPage(false);
+      const nextItem = galleryItems[galleryIndex + 1];
+      if (nextItem) openPhoto(nextItem, "library");
+    };
+  }
+};
 
 const unsorted = {
   page: 1,
