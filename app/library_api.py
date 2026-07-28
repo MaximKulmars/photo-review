@@ -166,9 +166,9 @@ def install_library_api(
                 )
                 row = connection.execute(
                     """
-                    SELECT id, library_root, media_type, kind, year, relative_path, name
-                    FROM containers
-                    WHERE library_root='photos' AND media_type='photo'
+                    SELECT c.*, 0 AS media_count, NULL AS cover_media_id
+                    FROM containers c
+                    WHERE c.library_root='photos' AND c.media_type='photo'
                       AND kind='album' AND relative_path=?
                     """,
                     (relative_path,),
@@ -192,11 +192,7 @@ def install_library_api(
             except OSError:
                 pass
             raise HTTPException(500, "Не удалось зарегистрировать созданный альбом")
-        return {
-            **{key: row[key] for key in row.keys()},
-            "media_count": 0,
-            "cover_media_id": None,
-        }
+        return {key: row[key] for key in row.keys()}
 
     @app.get("/api/library/media", dependencies=dependencies)
     def media(
