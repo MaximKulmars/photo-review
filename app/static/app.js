@@ -391,7 +391,7 @@ function uploadAlbumPhotos(files) {
       const errors = (data.results || []).filter(result => result.status !== "success").map(result => result.message || `${result.original_name}: не удалось добавить файл.`);
       const title = data.successful_count ? `Добавлено: ${data.successful_count} из ${data.requested_count} фотографий` : "Фотографии не добавлены";
       setAlbumUploadStatus(title, errors.length ? "Некоторые файлы не были добавлены." : "Все фотографии добавлены.", 100, errors);
-      if (data.successful_count) await albumRenderWithUpload(albumUpload.albumId, false);
+      if (data.successful_count) await album(albumUpload.albumId, false);
     }
     albumUpload.active = false;
     albumUploadButton.disabled = false;
@@ -426,4 +426,51 @@ const albumRenderWithUpload = album;
 album = async (id, push = false) => {
   albumUpload.albumId = Number(id);
   await albumRenderWithUpload(id, push);
+};
+const albumPagedOpen = album;
+const albumPaging = { id: null, page: 1, total: 0, loading: false, items: [], observer: null };
+function renderPagedAlbum() {
+  $("#libraryMedia").innerHTML = albumPaging.items.map(item => `<article class="photo-card"><button class="photo-open" data-media="${item.id}"><img class="thumb" src="/thumbnail/${item.id}" onerror="this.src='/photo/${item.id}'"></button><div class="photo-info"><div class="path">${escapeHtml(item.file_name)}</div></div></article>`).join("");
+  galleryItems = albumPaging.items;
+  document.querySelectorAll("#libraryMedia [data-media]").forEach(button => button.onclick = () => openPhoto(galleryItems.find(item => item.id === Number(button.dataset.media)), "library"));
+  const hasMore = albumPaging.items.length < albumPaging.total;
+  $("#libraryPagination").innerHTML = hasMore ? '<div class="lazy-loader" id="albumLazyLoader" aria-label="Загрузить ещё фотографии"><span></span></div>' : "";
+  const loader = $("#albumLazyLoader");
+  if (albumPaging.observer) albumPaging.observer.disconnect();
+  albumPaging.observer = null;
+  if (loader && "IntersectionObserver" in window) {
+    albumPaging.observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) loadAlbumPage(false);
+    }, { rootMargin: "320px 0px" });
+    albumPaging.observer.observe(loader);
+  } else if (loader) {
+    const onScroll = () => {
+      const rect = loader.getBoundingClientRect();
+      if (rect.top < window.innerHeight + 320) {
+        window.removeEventListener("scroll", onScroll);
+        loadAlbumPage(false);
+      }
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+  }
+}
+async function loadAlbumPage(reset = false) {
+  if (albumPaging.loading || !albumPaging.id) return;
+  albumPaging.loading = true;
+  const page = reset ? 1 : albumPaging.page + 1;
+  try {
+    const data = await api(`/api/library/media?container_id=${albumPaging.id}&page=${page}&page_size=48`);
+    albumPaging.page = page;
+    albumPaging.total = data.total;
+    albumPaging.items = reset ? data.items : [...albumPaging.items, ...data.items];
+    renderPagedAlbum();
+  } finally {
+    albumPaging.loading = false;
+  }
+}
+album = async (id, push = false) => {
+  albumPaging.id = Number(id);
+  await albumPagedOpen(id, push);
+  await loadAlbumPage(true);
 };
