@@ -1,9 +1,11 @@
 ﻿from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .config import Config
 from .uploads import install_upload_api
@@ -15,12 +17,40 @@ class ScanRequest(BaseModel):
     library_root: Literal["photos", "videos"] = "photos"
 
 
+class AlbumCreateRequest(BaseModel):
+    year: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=120)
+
+
+def _single_visible_folder_name(value: str, field_name: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise HTTPException(400, f"Введите {field_name}")
+    if normalized in {".", ".."} or normalized.startswith("."):
+        raise HTTPException(400, f"Недопустимое {field_name}")
+    if "/" in normalized or "\\" in normalized:
+        raise HTTPException(400, f"В {field_name} нельзя использовать символы / и \\")
+    if any(ord(character) < 32 or ord(character) == 127 for character in normalized):
+        raise HTTPException(400, f"В {field_name} есть недопустимые символы")
+    return normalized
+
+
+def _folder_inside(root: Path, name: str) -> Path:
+    target = root / name
+    try:
+        target.resolve(strict=False).relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(400, "Недопустимый путь") from exc
+    return target
+
+
 def install_library_api(
     app: FastAPI, database: Database, indexer: LibraryIndexer, require_login, config: Config
 ) -> None:
     dependencies = [Depends(require_login)]
 
     install_upload_api(app, database, indexer, require_login, config)
+
     @app.post("/api/library/scan", dependencies=dependencies)
     def scan_library(payload: ScanRequest):
         try:
@@ -81,6 +111,92 @@ def install_library_api(
             (library_root, media_type, year),
         )
         return {"items": [{key: row[key] for key in row.keys()} for row in rows]}
+
+    @app.post("/api/library/albums", dependencies=dependencies, status_code=201)
+    def create_album(payload: AlbumCreateRequest):
+        year = _single_visible_folder_name(payload.year, "название полки")
+        name = _single_visible_folder_name(payload.name, "название альбома")
+        root = config.library_roots.get("photos")
+        if root is None:
+            raise HTTPException(503, "Фототека не настроена")
+        root = root.resolve()
+        shelf = _folder_inside(root, year)
+        if shelf.is_symlink() or not shelf.is_dir():
+            raise HTTPException(404, f"Полка «{year}» не найдена")
+        target = _folder_inside(shelf, name)
+        if target.exists() or target.is_symlink():
+            raise HTTPException(409, f"Альбом «{name}» уже существует на полке «{year}»")
+
+        existing = database.one(
+            """
+            SELECT id FROM containers
+            WHERE library_root='photos' AND media_type='photo' AND kind='album'
+              AND year=? AND name=? COLLATE NOCASE AND missing_since IS NULL
+            LIMIT 1
+            """,
+            (year, name),
+        )
+        if existing is not None:
+            raise HTTPException(409, f"Альбом «{name}» уже существует на полке «{year}»")
+
+        try:
+            target.mkdir()
+        except PermissionError as exc:
+            raise HTTPException(403, f"Нет прав на создание альбома на полке «{year}»") from exc
+        except OSError as exc:
+            raise HTTPException(500, f"Не удалось создать папку альбома: {exc.strerror or 'ошибка файловой системы'}") from exc
+
+        if not target.is_dir() or target.is_symlink():
+            raise HTTPException(500, "Папка альбома была создана некорректно")
+        try:
+            relative_path = target.relative_to(root).as_posix()
+        except ValueError as exc:
+            target.rmdir()
+            raise HTTPException(500, "Созданная папка находится вне фототеки") from exc
+
+        try:
+            with database.connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO containers(
+                        library_root, media_type, kind, year, relative_path, name, missing_since
+                    ) VALUES ('photos', 'photo', 'album', ?, ?, ?, NULL)
+                    """,
+                    (year, relative_path, name),
+                )
+                row = connection.execute(
+                    """
+                    SELECT id, library_root, media_type, kind, year, relative_path, name
+                    FROM containers
+                    WHERE library_root='photos' AND media_type='photo'
+                      AND kind='album' AND relative_path=?
+                    """,
+                    (relative_path,),
+                ).fetchone()
+        except sqlite3.IntegrityError as exc:
+            try:
+                target.rmdir()
+            except OSError:
+                pass
+            raise HTTPException(409, f"Альбом «{name}» уже существует на полке «{year}»") from exc
+        except Exception:
+            try:
+                target.rmdir()
+            except OSError:
+                pass
+            raise
+
+        if row is None:
+            try:
+                target.rmdir()
+            except OSError:
+                pass
+            raise HTTPException(500, "Не удалось зарегистрировать созданный альбом")
+        return {
+            **{key: row[key] for key in row.keys()},
+            "media_count": 0,
+            "cover_media_id": None,
+        }
 
     @app.get("/api/library/media", dependencies=dependencies)
     def media(
