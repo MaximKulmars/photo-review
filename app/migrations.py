@@ -1,0 +1,322 @@
+﻿from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass
+from typing import Iterable
+
+
+class MigrationError(RuntimeError):
+    """Raised when a database cannot be migrated safely."""
+
+
+@dataclass(frozen=True)
+class Migration:
+    version: int
+    name: str
+    up: tuple[str, ...]
+    down: tuple[str, ...]
+
+
+MIGRATIONS = (
+    Migration(
+        1,
+        "initial_schema",
+        (
+            """
+            CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE media (
+                id INTEGER PRIMARY KEY,
+                relative_path TEXT NOT NULL UNIQUE,
+                size INTEGER NOT NULL,
+                mtime_ns INTEGER NOT NULL,
+                width INTEGER,
+                height INTEGER,
+                captured_at TEXT,
+                sha256 TEXT,
+                phash TEXT,
+                brightness REAL,
+                sharpness REAL,
+                edge_density REAL,
+                text_length INTEGER DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'active',
+                quarantine_path TEXT,
+                analysis_revision INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX media_hash_idx ON media(sha256)",
+            "CREATE INDEX media_status_idx ON media(status)",
+            "CREATE INDEX media_phash_idx ON media(phash)",
+            """
+            CREATE TABLE findings (
+                id INTEGER PRIMARY KEY,
+                media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+                category TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                score REAL NOT NULL DEFAULT 0,
+                group_key TEXT,
+                suggested_best INTEGER NOT NULL DEFAULT 0,
+                decision TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(media_id, category, group_key)
+            )
+            """,
+            """
+            CREATE INDEX findings_queue_idx
+                ON findings(category, decision)
+            """,
+            """
+            CREATE TABLE jobs (
+                id INTEGER PRIMARY KEY,
+                scope TEXT NOT NULL,
+                duplicate_scope TEXT NOT NULL,
+                state TEXT NOT NULL DEFAULT 'queued',
+                total INTEGER NOT NULL DEFAULT 0,
+                processed INTEGER NOT NULL DEFAULT 0,
+                skipped INTEGER NOT NULL DEFAULT 0,
+                unsupported INTEGER NOT NULL DEFAULT 0,
+                errors INTEGER NOT NULL DEFAULT 0,
+                message TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                finished_at TEXT
+            )
+            """,
+            """
+            CREATE TABLE audit_log (
+                id INTEGER PRIMARY KEY,
+                action TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                details TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        ),
+        (
+            "DROP TABLE audit_log",
+            "DROP TABLE jobs",
+            "DROP TABLE findings",
+            "DROP TABLE media",
+            "DROP TABLE settings",
+        ),
+    ),
+    Migration(
+        2,
+        "scan_job_reference",
+        ("ALTER TABLE media ADD COLUMN last_scan_job_id INTEGER",),
+        ("ALTER TABLE media DROP COLUMN last_scan_job_id",),
+    ),
+    Migration(
+        3,
+        "manual_quality",
+        (
+            "ALTER TABLE media ADD COLUMN "
+            "manual_quality INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("ALTER TABLE media DROP COLUMN manual_quality",),
+    ),
+    Migration(
+        4,
+        "general_job_type",
+        (
+            "ALTER TABLE jobs ADD COLUMN "
+            "kind TEXT NOT NULL DEFAULT 'analysis'",
+            "ALTER TABLE jobs ADD COLUMN payload TEXT",
+        ),
+        (
+            "ALTER TABLE jobs DROP COLUMN payload",
+            "ALTER TABLE jobs DROP COLUMN kind",
+        ),
+    ),
+    Migration(
+        5,
+        "light_library_index",
+        (
+            "ALTER TABLE media ADD COLUMN media_type TEXT NOT NULL DEFAULT 'photo'",
+            "ALTER TABLE media ADD COLUMN library_root TEXT NOT NULL DEFAULT 'photos'",
+            "ALTER TABLE media ADD COLUMN file_name TEXT",
+            "ALTER TABLE media ADD COLUMN parent_relative_path TEXT",
+            "ALTER TABLE media ADD COLUMN mime_type TEXT",
+            "ALTER TABLE media ADD COLUMN container_id INTEGER",
+            "ALTER TABLE media ADD COLUMN index_state TEXT NOT NULL DEFAULT 'indexed'",
+            "ALTER TABLE media ADD COLUMN missing_since TEXT",
+            """
+            CREATE TABLE containers (
+                id INTEGER PRIMARY KEY,
+                library_root TEXT NOT NULL,
+                media_type TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                year TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                name TEXT NOT NULL,
+                cover_media_id INTEGER,
+                cover_mode TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                missing_since TEXT,
+                UNIQUE(library_root, media_type, kind, relative_path)
+            )
+            """,
+            "CREATE INDEX media_library_idx ON media(library_root, media_type, index_state)",
+            "CREATE INDEX containers_library_idx ON containers(library_root, media_type, year)",
+        ),
+        (
+            "DROP TABLE containers",
+            "ALTER TABLE media DROP COLUMN missing_since",
+            "ALTER TABLE media DROP COLUMN index_state",
+            "ALTER TABLE media DROP COLUMN container_id",
+            "ALTER TABLE media DROP COLUMN mime_type",
+            "ALTER TABLE media DROP COLUMN parent_relative_path",
+            "ALTER TABLE media DROP COLUMN file_name",
+            "ALTER TABLE media DROP COLUMN library_root",
+            "ALTER TABLE media DROP COLUMN media_type",
+        ),
+    ),)
+
+LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
+APPLICATION_TABLES = {"settings", "media", "findings", "jobs", "audit_log"}
+
+
+def _tables(connection: sqlite3.Connection) -> set[str]:
+    return {
+        str(row[0])
+        for row in connection.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name NOT LIKE 'sqlite_%'
+            """
+        )
+    }
+
+
+def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+
+
+def detect_schema_version(connection: sqlite3.Connection) -> int:
+    """Return the version, including for databases created before migrations."""
+    tables = _tables(connection)
+    application_tables = tables & APPLICATION_TABLES
+    if not application_tables:
+        unrelated = tables - {"schema_migrations"}
+        if unrelated:
+            raise MigrationError(
+                "База содержит неизвестные таблицы и не похожа на Photo Review"
+            )
+        inferred = 0
+    elif application_tables != APPLICATION_TABLES:
+        missing = ", ".join(sorted(APPLICATION_TABLES - application_tables))
+        raise MigrationError(f"Неполная схема Photo Review; отсутствуют: {missing}")
+    else:
+        media_columns = _columns(connection, "media")
+        job_columns = _columns(connection, "jobs")
+        has_scan_job = "last_scan_job_id" in media_columns
+        has_manual_quality = "manual_quality" in media_columns
+        library_columns = {"media_type", "library_root", "file_name", "parent_relative_path", "mime_type", "container_id", "index_state", "missing_since"}
+        library_count = len(library_columns & media_columns)
+        has_library_index = library_count == len(library_columns) and "containers" in tables
+        if library_count and not has_library_index:
+            raise MigrationError("Структура медиатеки содержит частично применённую миграцию")
+        job_type_columns = {"kind", "payload"} & job_columns
+        has_job_type = job_type_columns == {"kind", "payload"}
+        if job_type_columns and not has_job_type:
+            raise MigrationError(
+                "Структура таблицы jobs содержит частично применённую миграцию"
+            )
+        if has_job_type and not (has_scan_job and has_manual_quality):
+            raise MigrationError("Структура таблиц не соответствует известной миграции")
+        if has_manual_quality and not has_scan_job:
+            raise MigrationError("Структура таблицы media непоследовательна")
+        inferred = (
+            5
+            if has_library_index
+            else 4
+            if has_job_type
+            else 3
+            if has_manual_quality
+            else 2
+            if has_scan_job
+            else 1
+        )
+
+    declared = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if declared > LATEST_SCHEMA_VERSION:
+        raise MigrationError(
+            f"Версия базы {declared} новее поддерживаемой {LATEST_SCHEMA_VERSION}"
+        )
+    if declared and declared != inferred:
+        raise MigrationError(
+            f"Версия схемы {declared} не соответствует структуре версии {inferred}"
+        )
+    return inferred
+
+
+def _execute_all(
+    connection: sqlite3.Connection, statements: Iterable[str]
+) -> None:
+    for statement in statements:
+        connection.execute(statement)
+
+
+def migrate(connection: sqlite3.Connection, current_version: int) -> None:
+    if current_version > LATEST_SCHEMA_VERSION:
+        raise MigrationError("Откат более новой базы автоматически запрещён")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        for migration in MIGRATIONS[:current_version]:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO schema_migrations(version, name)
+                VALUES (?, ?)
+                """,
+                (migration.version, migration.name),
+            )
+        for migration in MIGRATIONS[current_version:]:
+            _execute_all(connection, migration.up)
+            connection.execute(
+                "INSERT INTO schema_migrations(version, name) VALUES (?, ?)",
+                (migration.version, migration.name),
+            )
+            connection.execute(f"PRAGMA user_version={migration.version}")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+
+
+def rollback(
+    connection: sqlite3.Connection, current_version: int, target_version: int
+) -> None:
+    if target_version < 0 or target_version > current_version:
+        raise ValueError("Недопустимая целевая версия схемы")
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        for migration in reversed(MIGRATIONS[target_version:current_version]):
+            if migration.version == 5:
+                connection.execute("DROP INDEX IF EXISTS containers_library_idx")
+                connection.execute("DROP INDEX IF EXISTS media_library_idx")
+            connection.execute(
+                "DELETE FROM schema_migrations WHERE version=?",
+                (migration.version,),
+            )
+            _execute_all(connection, migration.down)
+            connection.execute(f"PRAGMA user_version={migration.version - 1}")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise

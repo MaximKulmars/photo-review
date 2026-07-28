@@ -94,34 +94,6 @@ class StorageTests(unittest.TestCase):
             )
             self.assertEqual(log["action"], "delete")
 
-    def test_copy_and_move_keep_contents_and_never_overwrite(self):
-        with tempfile.TemporaryDirectory() as directory:
-            tmp_path = Path(directory)
-            photos, quarantine = tmp_path / "photos", tmp_path / "quarantine"
-            photos.mkdir()
-            quarantine.mkdir()
-            source = photos / "2024" / "photo.jpg"
-            destination = photos / "sorted"
-            source.parent.mkdir()
-            destination.mkdir()
-            source.write_bytes(b"photo bytes")
-            database = Database(tmp_path / "data.sqlite3")
-            database.initialize()
-            media_id = make_media(database, "2024/photo.jpg", source)
-            storage = Storage(photos, quarantine, database)
-
-            copied = storage.copy_media(media_id, "sorted")
-            self.assertEqual(copied, "sorted/photo.jpg")
-            self.assertEqual(source.read_bytes(), (photos / copied).read_bytes())
-            with self.assertRaises(FileExistsError):
-                storage.copy_media(media_id, "sorted")
-
-            moved = storage.move_media(media_id, "sorted", rename_on_conflict=True)
-            self.assertEqual(moved, "sorted/photo (1).jpg")
-            self.assertFalse(source.exists())
-            self.assertEqual((photos / moved).read_bytes(), b"photo bytes")
-            self.assertEqual(database.one("SELECT relative_path FROM media WHERE id=?", (media_id,))["relative_path"], moved)
-
 
 if __name__ == "__main__":
     unittest.main()

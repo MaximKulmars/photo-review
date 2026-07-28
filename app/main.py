@@ -1,12 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import mimetypes
+from io import BytesIO
+
+from PIL import Image, ImageOps
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -15,6 +18,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from .analyzer import CATEGORIES, JobManager
 from .config import Config, load_config
 from .db import Database
+from .library import LibraryIndexer
+from .library_api import install_library_api
 from .security import password_matches, safe_path
 from .storage import Storage
 
@@ -23,12 +28,16 @@ config: Config = load_config()
 database = Database(config.database_path)
 storage = Storage(config.photos_root, config.quarantine_root, database)
 jobs = JobManager(database, config.photos_root, config.thumbnail_root)
+library_indexer = LibraryIndexer(database, config.library_roots)
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    for path in (config.photos_root, config.quarantine_root, config.data_root, config.thumbnail_root, config.model_root):
+    roots = [config.photos_root, config.quarantine_root, config.data_root, config.thumbnail_root, config.model_root]
+    if config.videos_root is not None:
+        roots.append(config.videos_root)
+    for path in roots:
         path.mkdir(parents=True, exist_ok=True)
     database.initialize()
     jobs.start_worker()
@@ -44,6 +53,8 @@ def require_login(request: Request) -> None:
     if config.auth_enabled and request.session.get("authenticated") is not True:
         raise HTTPException(status_code=401, detail="Требуется вход")
 
+
+install_library_api(app, database, library_indexer, require_login, config)
 
 def row_dict(row) -> dict:
     return {key: row[key] for key in row.keys()}
@@ -323,6 +334,24 @@ def photo(media_id: int):
     media_type, _ = mimetypes.guess_type(path.name)
     return FileResponse(path, media_type=media_type or "application/octet-stream")
 
+
+@app.get("/library-preview/{media_id}", dependencies=[Depends(require_login)])
+def library_preview(media_id: int):
+    row = database.one("SELECT * FROM media WHERE id=?", (media_id,))
+    if not row or row["status"] != "active":
+        raise HTTPException(404, "Файл не найден")
+    path = safe_path(config.photos_root, row["relative_path"])
+    if not path.is_file() or path.is_symlink():
+        raise HTTPException(404, "Файл не найден")
+    try:
+        with Image.open(path) as image:
+            preview = ImageOps.exif_transpose(image).convert("RGB")
+            preview.thumbnail((520, 360), Image.Resampling.LANCZOS)
+            output = BytesIO()
+            preview.save(output, format="JPEG", quality=88, optimize=True)
+    except OSError as exc:
+        raise HTTPException(415, "Невозможно создать миниатюру") from exc
+    return Response(output.getvalue(), media_type="image/jpeg")
 
 @app.get("/api/quarantine", dependencies=[Depends(require_login)])
 def quarantine():
