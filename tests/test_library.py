@@ -221,6 +221,136 @@ class LibraryIndexerTests(unittest.TestCase):
             self.assertEqual(filtered.status_code, 200)
             self.assertEqual(filtered.json()["total"], 1)
 
+    def test_api_updates_unsorted_capture_date_with_year_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            photos = root / "photos"
+            quarantine = root / "quarantine"
+            data = root / "data"
+            unsorted_file = photos / "Unsorted" / "Manual Import" / "year.jpg"
+            quarantine.mkdir(parents=True)
+            data.mkdir()
+            unsorted_file.parent.mkdir(parents=True)
+            Image.new("RGB", (8, 8), "white").save(unsorted_file, "JPEG")
+
+            database = Database(data / "data.sqlite3")
+            database.initialize()
+            indexer = LibraryIndexer(database, {"photos": photos})
+            indexer.scan("photos")
+            media_id = database.one(
+                "SELECT id FROM media WHERE relative_path=?",
+                ("Unsorted/Manual Import/year.jpg",),
+            )["id"]
+            app = FastAPI()
+            config = Config(
+                photos_root=photos,
+                videos_root=None,
+                quarantine_root=quarantine,
+                data_root=data,
+                password="",
+                session_secret="",
+                auth_enabled=False,
+                port=0,
+                upload_max_files=50,
+                upload_max_file_bytes=1024 * 1024,
+                upload_max_total_bytes=10 * 1024 * 1024,
+            )
+            install_library_api(app, database, indexer, lambda: True, config)
+
+            response = TestClient(app).patch(
+                f"/api/library/unsorted/{media_id}/captured-at",
+                json={"captured_at": "2020"},
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["captured_at"], "2020-01-01T00:00:00")
+
+    def test_api_updates_unsorted_capture_date_with_year_and_month(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            photos = root / "photos"
+            quarantine = root / "quarantine"
+            data = root / "data"
+            unsorted_file = photos / "Unsorted" / "Manual Import" / "month.jpg"
+            quarantine.mkdir(parents=True)
+            data.mkdir()
+            unsorted_file.parent.mkdir(parents=True)
+            Image.new("RGB", (8, 8), "white").save(unsorted_file, "JPEG")
+
+            database = Database(data / "data.sqlite3")
+            database.initialize()
+            indexer = LibraryIndexer(database, {"photos": photos})
+            indexer.scan("photos")
+            media_id = database.one(
+                "SELECT id FROM media WHERE relative_path=?",
+                ("Unsorted/Manual Import/month.jpg",),
+            )["id"]
+            app = FastAPI()
+            config = Config(
+                photos_root=photos,
+                videos_root=None,
+                quarantine_root=quarantine,
+                data_root=data,
+                password="",
+                session_secret="",
+                auth_enabled=False,
+                port=0,
+                upload_max_files=50,
+                upload_max_file_bytes=1024 * 1024,
+                upload_max_total_bytes=10 * 1024 * 1024,
+            )
+            install_library_api(app, database, indexer, lambda: True, config)
+
+            client = TestClient(app)
+            response = client.patch(
+                f"/api/library/unsorted/{media_id}/captured-at",
+                json={"captured_at": "2020-05"},
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["captured_at"], "2020-05-01T00:00:00")
+            filtered = client.get("/api/library/unsorted?year=2020&month=5")
+            self.assertEqual(filtered.status_code, 200)
+            self.assertEqual(filtered.json()["total"], 1)
+
+    def test_api_shelves_include_empty_physical_shelf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            photos = root / "photos"
+            quarantine = root / "quarantine"
+            data = root / "data"
+            (photos / "2024").mkdir(parents=True)
+            (photos / "Unsorted").mkdir()
+            quarantine.mkdir()
+            data.mkdir()
+
+            database = Database(data / "data.sqlite3")
+            database.initialize()
+            indexer = LibraryIndexer(database, {"photos": photos})
+            app = FastAPI()
+            config = Config(
+                photos_root=photos,
+                videos_root=None,
+                quarantine_root=quarantine,
+                data_root=data,
+                password="",
+                session_secret="",
+                auth_enabled=False,
+                port=0,
+                upload_max_files=50,
+                upload_max_file_bytes=1024 * 1024,
+                upload_max_total_bytes=10 * 1024 * 1024,
+            )
+            install_library_api(app, database, indexer, lambda: True, config)
+
+            response = TestClient(app).get("/api/library/shelves?library_root=photos")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                response.json()["items"],
+                [{"year": "2024", "media_count": 0, "album_count": 0, "cover_media_id": None}],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

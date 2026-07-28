@@ -98,8 +98,16 @@ def _effective_unsorted_date(item: dict[str, object]) -> tuple[str, int, int | N
 def _manual_capture_date(value: str | None) -> str | None:
     if value is None or not value.strip():
         return None
+    text = value.strip()
     try:
-        parsed = datetime.fromisoformat(value.strip())
+        partial = re.fullmatch(r"(\d{4})(?:-(\d{1,2})(?:-(\d{1,2}))?)?", text)
+        if partial:
+            year = int(partial.group(1))
+            month = int(partial.group(2) or 1)
+            day = int(partial.group(3) or 1)
+            parsed = datetime(year, month, day)
+        else:
+            parsed = datetime.fromisoformat(text)
     except ValueError as exc:
         raise HTTPException(400, "Недопустимая дата съёмки") from exc
     now = datetime.now(parsed.tzinfo) if parsed.tzinfo else datetime.now()
@@ -156,7 +164,18 @@ def install_library_api(
         album_counts = {row["year"]: row["album_count"] for row in containers}
         media_counts = {row["year"]: row["media_count"] for row in rows}
         cover_ids = {row["year"]: row["cover_media_id"] for row in rows}
-        years = sorted(set(media_counts) | set(album_counts))
+        physical_years: set[str] = set()
+        root = config.library_roots.get(library_root)
+        if root and root.is_dir():
+            physical_years = {
+                child.name
+                for child in root.iterdir()
+                if child.is_dir()
+                and not child.is_symlink()
+                and not child.name.startswith(".")
+                and not (library_root == "photos" and child.name == "Unsorted")
+            }
+        years = sorted(set(media_counts) | set(album_counts) | physical_years)
         return {
             "items": [
                 {

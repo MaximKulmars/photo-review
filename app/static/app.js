@@ -481,9 +481,11 @@ const unsorted = {
   pageSize: 48,
   items: [],
   selected: new Set(),
+  loading: false,
   sourcesLoaded: false,
   facets: { years: [], months: [] },
   collapsed: new Set(JSON.parse(localStorage.getItem("unsortedCollapsedGroups") || "[]")),
+  observer: null,
 };
 const monthNames = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
 function photoWord(count) {
@@ -572,24 +574,40 @@ function renderUnsorted() {
     };
     $(".photo-open", node).onclick = () => openPhoto(item, "unsorted");
   });
-  const pages = Math.max(1, Math.ceil(unsorted.total / unsorted.pageSize));
-  $("#unsortedPagination").innerHTML = pages > 1 ? `<button class="button" data-unsorted-page="${unsorted.page - 1}" ${unsorted.page <= 1 ? "disabled" : ""}>Назад</button><span>Страница ${unsorted.page} из ${pages}</span><button class="button" data-unsorted-page="${unsorted.page + 1}" ${unsorted.page >= pages ? "disabled" : ""}>Далее</button>` : "";
-  $$("[data-unsorted-page]").forEach(button => button.onclick = () => loadUnsorted(Number(button.dataset.unsortedPage)));
+  const hasMore = unsorted.items.length < unsorted.total;
+  $("#unsortedPagination").innerHTML = hasMore ? '<div class="lazy-loader" id="unsortedLazyLoader" aria-label="Загрузить ещё фотографии"><span></span></div>' : "";
+  if (unsorted.observer) unsorted.observer.disconnect();
+  unsorted.observer = null;
+  const loader = $("#unsortedLazyLoader");
+  if (loader) {
+    unsorted.observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting) && !unsorted.loading) {
+        loadUnsorted(unsorted.page + 1, true).catch(error => toast(error.message));
+      }
+    }, { rootMargin: "500px" });
+    unsorted.observer.observe(loader);
+  }
 }
-async function loadUnsorted(page = 1) {
+async function loadUnsorted(page = 1, append = false) {
+  if (unsorted.loading) return;
   activateView("photo-unsorted");
   setActiveLibraryNav('[data-library-view="photo-unsorted"]');
   $("#photoNav").classList.remove("hidden");
   $("#sortingNav").classList.add("hidden");
-  if (!unsorted.sourcesLoaded) await loadUnsortedSources();
-  const data = await api(`/api/library/unsorted?${unsortedQuery(page)}`);
-  unsorted.page = page;
-  unsorted.total = data.total;
-  unsorted.items = data.items;
-  unsorted.facets = data.facets || unsorted.facets;
-  unsorted.selected.clear();
-  ensureUnsortedFacets();
-  renderUnsorted();
+  unsorted.loading = true;
+  try {
+    if (!unsorted.sourcesLoaded) await loadUnsortedSources();
+    const data = await api(`/api/library/unsorted?${unsortedQuery(page)}`);
+    unsorted.page = page;
+    unsorted.total = data.total;
+    unsorted.items = append ? [...unsorted.items, ...data.items] : data.items;
+    unsorted.facets = data.facets || unsorted.facets;
+    if (!append) unsorted.selected.clear();
+    ensureUnsortedFacets();
+    renderUnsorted();
+  } finally {
+    unsorted.loading = false;
+  }
 }
 function selectedUnsortedIds() {
   return [...unsorted.selected];
@@ -603,12 +621,12 @@ async function openUnsortedCreateAlbumDialog() {
   if (!ids.length) return toast("Сначала выберите фотографии");
   const data = await api("/api/library/shelves?library_root=photos");
   const shelfYears = (data.items || []).map(item => String(item.year));
-  const facetYears = (unsorted.facets.years || []).map(item => String(item.year));
-  const years = [...new Set([...shelfYears, ...facetYears])].filter(Boolean).sort((a, b) => b.localeCompare(a, "ru"));
+  const years = [...new Set(shelfYears)].filter(Boolean).sort((a, b) => b.localeCompare(a, "ru"));
+  if (!years.length) return toast("Сначала создайте полку для альбома");
   const currentYear = $("#unsortedYear").value || years[0] || new Date().getFullYear();
   $("#unsortedCreateAlbumCount").textContent = `Будет перемещено: ${ids.length} ${photoWord(ids.length)}`;
-  $("#unsortedCreateAlbumYearList").innerHTML = years.map(year => `<option value="${escapeHtml(year)}"></option>`).join("");
-  $("#unsortedCreateAlbumYear").value = currentYear;
+  $("#unsortedCreateAlbumYear").innerHTML = years.map(year => `<option value="${escapeHtml(year)}">${escapeHtml(year)}</option>`).join("");
+  $("#unsortedCreateAlbumYear").value = years.includes(String(currentYear)) ? String(currentYear) : years[0];
   $("#unsortedCreateAlbumName").value = "";
   setUnsortedCreateAlbumError();
   $("#unsortedCreateAlbumSubmit").disabled = false;
@@ -692,10 +710,10 @@ function setupUnsortedControls() {
     $("#unsortedMove").insertAdjacentHTML("afterend", '<button class="button" id="unsortedCreateAlbum" type="button">Создать альбом</button>');
   }
   if (!$("#unsortedCreateAlbumDialog")) {
-    document.body.insertAdjacentHTML("beforeend", `<dialog id="unsortedCreateAlbumDialog"><form id="unsortedCreateAlbumForm"><div class="dialog-heading"><div><h2>Создать альбом из выбранных</h2><p class="muted" id="unsortedCreateAlbumCount"></p></div><button type="button" class="icon-button" data-close aria-label="Закрыть">×</button></div><label>Полка<input id="unsortedCreateAlbumYear" list="unsortedCreateAlbumYearList" maxlength="120" autocomplete="off" required><datalist id="unsortedCreateAlbumYearList"></datalist></label><label>Название альбома<input id="unsortedCreateAlbumName" maxlength="120" autocomplete="off" required placeholder="Например, Поездка в Гюмри"></label><p class="notice danger hidden" id="unsortedCreateAlbumError" role="alert"></p><div class="dialog-actions"><button type="button" class="button" data-close>Отмена</button><button class="button primary" id="unsortedCreateAlbumSubmit" type="submit">Создать и переместить</button></div></form></dialog>`);
+    document.body.insertAdjacentHTML("beforeend", `<dialog id="unsortedCreateAlbumDialog"><form id="unsortedCreateAlbumForm"><div class="dialog-heading"><div><h2>Создать альбом из выбранных</h2><p class="muted" id="unsortedCreateAlbumCount"></p></div><button type="button" class="icon-button" data-close aria-label="Закрыть">×</button></div><label>Полка<select id="unsortedCreateAlbumYear" required></select></label><label>Название альбома<input id="unsortedCreateAlbumName" maxlength="120" autocomplete="off" required placeholder="Например, Поездка в Гюмри"></label><p class="notice danger hidden" id="unsortedCreateAlbumError" role="alert"></p><div class="dialog-actions"><button type="button" class="button" data-close>Отмена</button><button class="button primary" id="unsortedCreateAlbumSubmit" type="submit">Создать и переместить</button></div></form></dialog>`);
   }
   if (!$("#unsortedDateDialog")) {
-    document.body.insertAdjacentHTML("beforeend", `<dialog id="unsortedDateDialog"><form id="unsortedDateForm"><div class="dialog-heading"><div><h2>Дата съёмки</h2><p class="muted" id="unsortedDatePath"></p></div><button type="button" class="icon-button" data-close aria-label="Закрыть">×</button></div><label>Дата и время<input id="unsortedDateInput" type="datetime-local"></label><p class="notice danger hidden" id="unsortedDateError" role="alert"></p><div class="dialog-actions"><button type="button" class="button" id="unsortedDateClear">Сбросить дату</button><button type="button" class="button" data-close>Отмена</button><button class="button primary" id="unsortedDateSubmit" type="submit">Сохранить</button></div></form></dialog>`);
+    document.body.insertAdjacentHTML("beforeend", `<dialog id="unsortedDateDialog"><form id="unsortedDateForm"><div class="dialog-heading"><div><h2>Дата съёмки</h2><p class="muted" id="unsortedDatePath"></p></div><button type="button" class="icon-button" data-close aria-label="Закрыть">×</button></div><label>Дата съёмки<input id="unsortedDateInput" type="text" inputmode="numeric" autocomplete="off" placeholder="2020, 2020-05 или 2020-05-14"></label><p class="muted">Можно указать только год, год и месяц, дату или дату со временем.</p><p class="notice danger hidden" id="unsortedDateError" role="alert"></p><div class="dialog-actions"><button type="button" class="button" id="unsortedDateClear">Сбросить дату</button><button type="button" class="button" data-close>Отмена</button><button class="button primary" id="unsortedDateSubmit" type="submit">Сохранить</button></div></form></dialog>`);
   }
   $$("[data-close]").forEach(button => button.onclick = () => button.closest("dialog").close());
 }
