@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from .config import Config
 from .uploads import install_upload_api
 from .db import Database
+from .album_service import AlbumRenameError, AlbumRenamer, normalize_single_visible_folder_name
 from .library import LibraryIndexer
 
 
@@ -19,6 +20,10 @@ class ScanRequest(BaseModel):
 
 class AlbumCreateRequest(BaseModel):
     year: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=120)
+
+
+class AlbumRenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
 
@@ -50,6 +55,7 @@ def install_library_api(
     dependencies = [Depends(require_login)]
 
     install_upload_api(app, database, indexer, require_login, config)
+    album_renamer = AlbumRenamer(database, config)
 
     @app.post("/api/library/scan", dependencies=dependencies)
     def scan_library(payload: ScanRequest):
@@ -57,6 +63,13 @@ def install_library_api(
             return indexer.scan(payload.library_root).as_dict()
         except (ValueError, FileNotFoundError) as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.patch("/api/library/albums/{container_id}", dependencies=dependencies)
+    def rename_album(container_id: int, payload: AlbumRenameRequest):
+        try:
+            return album_renamer.rename(container_id, payload.name)
+        except AlbumRenameError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.get("/api/library/shelves", dependencies=dependencies)
     def shelves(library_root: Literal["photos", "videos"] = "photos"):

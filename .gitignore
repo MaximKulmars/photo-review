@@ -3,9 +3,5 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .venv/
-.env
 photo-review-data/
 .smoke/
-sources/
-AGENTS.md
-photo-review*.tar.gz

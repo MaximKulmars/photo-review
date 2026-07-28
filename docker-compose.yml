@@ -3,35 +3,35 @@ name: photo-review
 services:
   photo-review:
     build: .
-    image: ${PHOTO_REVIEW_IMAGE:-photo-review:local}
+    image: photo-review:local
     container_name: photo-review
     restart: unless-stopped
     ports:
-      - "${PHOTO_REVIEW_PORT:-8088}:8080"
+      - "8088:8080"
     environment:
-      PHOTO_REVIEW_PASSWORD: "${PHOTO_REVIEW_PASSWORD:-change-me}"
-      PHOTO_REVIEW_SESSION_SECRET: "${PHOTO_REVIEW_SESSION_SECRET:-replace-with-a-long-random-string}"
-      PHOTO_REVIEW_AUTH_ENABLED: "${PHOTO_REVIEW_AUTH_ENABLED:-true}"
-      PHOTO_REVIEW_OCR_LANGS: "${PHOTO_REVIEW_OCR_LANGS:-rus+eng}"
-      TZ: "${TZ:-Etc/UTC}"
+      PHOTO_REVIEW_PASSWORD: "change-me"
+      PHOTO_REVIEW_SESSION_SECRET: "replace-with-a-long-random-string"
+      PHOTO_REVIEW_OCR_LANGS: "rus+eng"
+      TZ: "Asia/Yerevan"
     volumes:
-      - ${PHOTO_REVIEW_PHOTOS:-/srv/photos}:/photos
-      - ${PHOTO_REVIEW_QUARANTINE:-/srv/photo-quarantine}:/quarantine
-      - ${PHOTO_REVIEW_DATA:-./photo-review-data}:/data
+      - /srv/storage/02_IMG/Photos:/photos
+      - /srv/storage/02_IMG/Photo_Quarantine:/quarantine
+      - ./photo-review-data:/data
     deploy:
       resources:
         limits:
-          memory: ${PHOTO_REVIEW_MEMORY:-3G}
-          cpus: "${PHOTO_REVIEW_CPUS:-2.0}"
+          memory: 3G
+          cpus: "2.0"
 
 x-casaos:
   architectures:
     - amd64
   main: photo-review
-  port_map: "${PHOTO_REVIEW_PORT:-8088}"
+  port_map: "8088"
   scheme: http
   title:
     custom: Разбор фотографий
   description:
     custom: Локальная проверка и очистка фотоархива
   category: Media
+
