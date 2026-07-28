@@ -517,9 +517,8 @@ function unsortedCard(item) {
   return `<article class="photo-card" data-unsorted-card="${item.id}"><input type="checkbox" data-unsorted-id="${item.id}" aria-label="Выбрать"><button class="photo-open" type="button"><img class="thumb" loading="lazy" src="/thumbnail/${item.id}" onerror="this.onerror=null;this.src='/photo/${item.id}'" alt="${escapeHtml(item.file_name || item.relative_path)}"></button><div class="photo-info"><div class="path">${escapeHtml(item.file_name || item.relative_path)}</div><div class="reason">${escapeHtml(source)}${item.source_relative_path ? ` · ${escapeHtml(item.source_relative_path)}` : ""}</div><div class="meta"><span>${escapeHtml(dateNote)}</span><span>${bytes(item.size)}</span></div></div></article>`;
 }
 function unsortedGroupKey(item) {
-  const date = new Date(item.effective_date || item.imported_at);
-  const year = Number.isFinite(date.getFullYear()) ? date.getFullYear() : "Без даты";
-  const month = Number.isFinite(date.getMonth()) ? date.getMonth() : -1;
+  const year = item.effective_year || "Без даты";
+  const month = item.effective_month || -1;
   return `${year}-${month}`;
 }
 function renderUnsortedGroups() {
@@ -528,9 +527,8 @@ function renderUnsortedGroups() {
     const key = unsortedGroupKey(item);
     let group = groups.find(candidate => candidate.key === key);
     if (!group) {
-      const date = new Date(item.effective_date || item.imported_at);
-      const year = Number.isFinite(date.getFullYear()) ? date.getFullYear() : "Без даты";
-      const month = Number.isFinite(date.getMonth()) ? monthNames[date.getMonth()] : "Без месяца";
+      const year = item.effective_year || "Без даты";
+      const month = item.effective_month ? monthNames[item.effective_month - 1] : "Без месяца";
       group = { key, year, month, items: [] };
       groups.push(group);
     }

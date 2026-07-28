@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
 import sqlite3
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -58,6 +60,28 @@ def _folder_inside(root: Path, name: str) -> Path:
     except ValueError as exc:
         raise HTTPException(400, "Недопустимый путь") from exc
     return target
+
+
+def _effective_unsorted_date(item: dict[str, object]) -> tuple[str, int, int | None]:
+    captured_at = item.get("captured_at")
+    imported_at = str(item.get("imported_at") or "")
+    if captured_at:
+        date = str(captured_at)
+        parsed = datetime.fromisoformat(date)
+        return date, parsed.year, parsed.month
+
+    path = "/".join(
+        str(value or "")
+        for value in (item.get("source_relative_path"), item.get("relative_path"))
+    )
+    match = re.search(r"(?<!\d)((?:19|20)\d{2})(?:[^\d]+(0?[1-9]|1[0-2]))?", path)
+    if match:
+        year = int(match.group(1))
+        month = int(match.group(2)) if match.group(2) else None
+        return f"{year:04d}-{month or 1:02d}-01T00:00:00", year, month
+
+    parsed = datetime.fromisoformat(imported_at)
+    return imported_at, parsed.year, parsed.month
 
 
 def install_library_api(
@@ -190,55 +214,50 @@ def install_library_api(
         elif date_status == "missing":
             where.append("captured_at IS NULL")
         effective = "COALESCE(captured_at, imported_at)"
-        if year is not None:
-            where.append(f"strftime('%Y', {effective})=?")
-            params.append(f"{year:04d}")
-        if month is not None:
-            if month < 1 or month > 12:
-                raise HTTPException(400, "Недопустимый месяц")
-            where.append(f"strftime('%m', {effective})=?")
-            params.append(f"{month:02d}")
+        if month is not None and (month < 1 or month > 12):
+            raise HTTPException(400, "Недопустимый месяц")
         clause = " AND ".join(where)
         page, page_size = max(page, 1), min(max(page_size, 1), 200)
-        order_direction = "ASC" if sort == "asc" else "DESC"
-        total = database.one(
-            f"SELECT COUNT(*) AS count FROM media WHERE {clause}", tuple(params)
-        )["count"]
-        year_rows = database.all(
-            f"""
-            SELECT strftime('%Y', {effective}) AS year, COUNT(*) AS count
-            FROM media WHERE {clause}
-            GROUP BY year ORDER BY year DESC
-            """,
-            tuple(params),
-        )
-        month_rows = database.all(
-            f"""
-            SELECT strftime('%m', {effective}) AS month, COUNT(*) AS count
-            FROM media WHERE {clause}
-            GROUP BY month ORDER BY month DESC
-            """,
-            tuple(params),
-        )
         rows = database.all(
             f"""
             SELECT id, relative_path, file_name, parent_relative_path, mime_type,
               size, width, height, captured_at, imported_at, date_source,
               source_name, source_relative_path, {effective} AS effective_date
             FROM media WHERE {clause}
-            ORDER BY {effective} {order_direction}, relative_path COLLATE NOCASE
-            LIMIT ? OFFSET ?
+            ORDER BY relative_path COLLATE NOCASE
             """,
-            (*params, page_size, (page - 1) * page_size),
+            tuple(params),
+        )
+        items = [{key: row[key] for key in row.keys()} for row in rows]
+        for item in items:
+            effective_date, effective_year, effective_month = _effective_unsorted_date(item)
+            item["effective_date"] = effective_date
+            item["effective_year"] = effective_year
+            item["effective_month"] = effective_month
+        facet_items = items
+        if year is not None:
+            items = [item for item in items if item["effective_year"] == year]
+        if month is not None:
+            items = [item for item in items if item["effective_month"] == month]
+        items.sort(
+            key=lambda item: (str(item["effective_date"]), str(item["relative_path"]).casefold()),
+            reverse=sort == "desc",
+        )
+        total = len(items)
+        page_items = items[(page - 1) * page_size: page * page_size]
+        years = sorted({int(item["effective_year"]) for item in facet_items}, reverse=True)
+        months = sorted(
+            {int(item["effective_month"]) for item in facet_items if item["effective_month"]},
+            reverse=True,
         )
         return {
-            "items": [{key: row[key] for key in row.keys()} for row in rows],
+            "items": page_items,
             "total": total,
             "page": page,
             "page_size": page_size,
             "facets": {
-                "years": [{key: row[key] for key in row.keys()} for row in year_rows],
-                "months": [{key: row[key] for key in row.keys()} for row in month_rows],
+                "years": [{"year": year, "count": sum(1 for item in facet_items if item["effective_year"] == year)} for year in years],
+                "months": [{"month": month, "count": sum(1 for item in facet_items if item["effective_month"] == month)} for month in months],
             },
         }
 
