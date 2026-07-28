@@ -15,6 +15,9 @@ class Config:
     session_secret: str
     auth_enabled: bool
     port: int
+    upload_max_files: int
+    upload_max_file_bytes: int
+    upload_max_total_bytes: int
 
     @property
     def library_roots(self) -> dict[str, Path]:
@@ -52,4 +55,7 @@ def load_config() -> Config:
         auth_enabled=os.getenv("PHOTO_REVIEW_AUTH_ENABLED", "true").lower()
         in {"1", "true", "yes", "on"},
         port=int(os.getenv("PHOTO_REVIEW_PORT", "8080")),
+        upload_max_files=int(os.getenv("PHOTO_REVIEW_UPLOAD_MAX_FILES", "50")),
+        upload_max_file_bytes=int(os.getenv("PHOTO_REVIEW_UPLOAD_MAX_FILE_BYTES", str(100 * 1024 * 1024))),
+        upload_max_total_bytes=int(os.getenv("PHOTO_REVIEW_UPLOAD_MAX_TOTAL_BYTES", str(1024 * 1024 * 1024))),
     )

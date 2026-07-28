@@ -54,7 +54,7 @@ def require_login(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Требуется вход")
 
 
-install_library_api(app, database, library_indexer, require_login)
+install_library_api(app, database, library_indexer, require_login, config)
 
 def row_dict(row) -> dict:
     return {key: row[key] for key in row.keys()}

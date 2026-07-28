@@ -5,6 +5,8 @@ from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
+from .config import Config
+from .uploads import install_upload_api
 from .db import Database
 from .library import LibraryIndexer
 
@@ -14,10 +16,11 @@ class ScanRequest(BaseModel):
 
 
 def install_library_api(
-    app: FastAPI, database: Database, indexer: LibraryIndexer, require_login
+    app: FastAPI, database: Database, indexer: LibraryIndexer, require_login, config: Config
 ) -> None:
     dependencies = [Depends(require_login)]
 
+    install_upload_api(app, database, indexer, require_login, config)
     @app.post("/api/library/scan", dependencies=dependencies)
     def scan_library(payload: ScanRequest):
         try:

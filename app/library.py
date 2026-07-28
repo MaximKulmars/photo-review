@@ -44,9 +44,9 @@ class LibraryIndexer:
     def scan(self, library_root: str = "photos") -> ScanReport:
         root = self.roots.get(library_root)
         if root is None:
-            raise ValueError("Корень библиотеки не настроен")
+            raise ValueError("Invalid album file")
         if not root.is_dir():
-            raise FileNotFoundError("Корень библиотеки не найден")
+            raise FileNotFoundError("РљРѕСЂРµРЅСЊ Р±РёР±Р»РёРѕС‚РµРєРё РЅРµ РЅР°Р№РґРµРЅ")
         media_type = "photo" if library_root == "photos" else "video"
         extensions = PHOTO_EXTENSIONS if media_type == "photo" else VIDEO_EXTENSIONS
         seen_paths: set[str] = set()
@@ -240,3 +240,31 @@ class LibraryIndexer:
             ),
         )
         return True
+
+    def index_album_file(self, container_id: int, path: Path) -> int:
+        """Register one already-written photo in its existing album container."""
+        root = self.roots["photos"]
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("Invalid album file") from exc
+        if not resolved.is_file() or resolved.is_symlink():
+            raise ValueError("Invalid album file")
+        with self.database.connect() as connection:
+            container = connection.execute(
+                "SELECT id, relative_path FROM containers WHERE id=? AND library_root='photos' "
+                "AND media_type='photo' AND kind='album' AND missing_since IS NULL",
+                (container_id,),
+            ).fetchone()
+            if container is None:
+                raise ValueError("Invalid album file")
+            album_path = (root / container["relative_path"]).resolve()
+            if resolved.parent != album_path:
+                raise ValueError("Invalid album file")
+            self._upsert_media(connection, root, resolved, "photos", "photo", container_id)
+            row = connection.execute(
+                "SELECT id FROM media WHERE library_root='photos' AND relative_path=? AND status='active'",
+                (resolved.relative_to(root).as_posix(),),
+            ).fetchone()
+            return int(row["id"])

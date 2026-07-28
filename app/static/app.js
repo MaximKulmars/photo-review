@@ -354,3 +354,61 @@ openPhoto = (item, mode) => {
   stage.insertAdjacentHTML("beforeend", '<button class="gallery-close" id="galleryClose" aria-label="Закрыть просмотр">×</button>');
   $("#galleryClose").onclick = () => $("#photoDialog").close();
 };
+
+const albumUpload = { active: false, albumId: null };
+const albumUploadButton = $("#addAlbumPhotos");
+const albumUploadInput = $("#albumPhotoInput");
+const albumUploadStatus = $("#albumUploadStatus");
+function setAlbumUploadStatus(title, message, percent = 0, errors = []) {
+  albumUploadStatus.classList.remove("hidden");
+  $("#albumUploadTitle").textContent = title;
+  $("#albumUploadMessage").textContent = message;
+  $("#albumUploadProgress").style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  $("#albumUploadErrors").innerHTML = errors.map(error => `<li>${escapeHtml(error)}</li>`).join("");
+}
+function uploadAlbumPhotos(files) {
+  const selected = [...files];
+  if (!selected.length || albumUpload.active || !albumUpload.albumId) return;
+  albumUpload.active = true;
+  albumUploadButton.disabled = true;
+  const albumName = $("#albumTitle").textContent || "альбом";
+  setAlbumUploadStatus(`Добавляем ${selected.length} фотографий в альбом «${albumName}»`, `Загружено: 0 из ${selected.length}`, 0);
+  const form = new FormData();
+  selected.forEach(file => form.append("files", file, file.name));
+  const request = new XMLHttpRequest();
+  request.open("POST", `/api/library/albums/${albumUpload.albumId}/photos`);
+  request.upload.onprogress = event => {
+    if (!event.lengthComputable) return;
+    const percent = event.loaded / event.total * 100;
+    setAlbumUploadStatus(`Добавляем ${selected.length} фотографий в альбом «${albumName}»`, `Передано: ${Math.round(percent)}%`, percent);
+  };
+  request.onload = async () => {
+    let data = {};
+    try { data = JSON.parse(request.responseText || "{}"); } catch (_) { /* handled below */ }
+    if (request.status < 200 || request.status >= 300) {
+      setAlbumUploadStatus("Фотографии не добавлены", data.detail || "Не удалось выполнить загрузку.", 0);
+    } else {
+      const errors = (data.results || []).filter(result => result.status !== "success").map(result => result.message || `${result.original_name}: не удалось добавить файл.`);
+      const title = data.successful_count ? `Добавлено: ${data.successful_count} из ${data.requested_count} фотографий` : "Фотографии не добавлены";
+      setAlbumUploadStatus(title, errors.length ? "Некоторые файлы не были добавлены." : "Все фотографии добавлены.", 100, errors);
+      if (data.successful_count) await albumRenderWithUpload(albumUpload.albumId, false);
+    }
+    albumUpload.active = false;
+    albumUploadButton.disabled = false;
+    albumUploadInput.value = "";
+  };
+  request.onerror = () => {
+    setAlbumUploadStatus("Фотографии не добавлены", "Не удалось связаться с сервером.", 0);
+    albumUpload.active = false;
+    albumUploadButton.disabled = false;
+    albumUploadInput.value = "";
+  };
+  request.send(form);
+}
+albumUploadButton.onclick = () => { if (!albumUpload.active) albumUploadInput.click(); };
+albumUploadInput.onchange = () => uploadAlbumPhotos(albumUploadInput.files);
+const albumRenderWithUpload = album;
+album = async (id, push = false) => {
+  albumUpload.albumId = Number(id);
+  await albumRenderWithUpload(id, push);
+};
