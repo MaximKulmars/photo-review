@@ -6,7 +6,12 @@ const bytes = value => value ? (value < 1024 * 1024 ? `${Math.round(value / 1024
 const displayDate = value => value ? new Date(value).toLocaleDateString("ru-RU") : "—";
 function toast(message) { const target = $("#toast"); target.textContent = message; target.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => target.classList.remove("show"), 3400); }
 async function api(url, options = {}) { const response = await fetch(url, { headers: { "Content-Type": "application/json", ...(options.headers || {}) }, ...options }); const data = await response.json().catch(() => ({})); if (!response.ok) { const detail = Array.isArray(data.detail) ? "Проверьте выбранные файлы и папку назначения" : data.detail; const error = new Error(detail || data.failures?.[0]?.error || "Не удалось выполнить действие"); error.data = data; error.status = response.status; throw error; } return data; }
-function showView(view) { $$(".view").forEach(node => node.classList.toggle("active", node.id === `view-${view}`)); $$(".nav-item").forEach(node => node.classList.toggle("active", node.dataset.view === view)); $("#sidebar").classList.remove("open"); if (view === "quarantine") loadQuarantine(); if (view === "settings") loadSettings(); if (view === "audit") loadAudit(); }
+function rememberView(view) {
+  if (["dashboard", "quarantine", "settings", "audit"].includes(view)) {
+    history.replaceState(null, "", `#view=${encodeURIComponent(view)}`);
+  }
+}
+function showView(view) { $$(".view").forEach(node => node.classList.toggle("active", node.id === `view-${view}`)); $$(".nav-item").forEach(node => node.classList.toggle("active", node.dataset.view === view)); $("#sidebar").classList.remove("open"); rememberView(view); if (view === "quarantine") loadQuarantine(); if (view === "settings") loadSettings(); if (view === "audit") loadAudit(); }
 
 async function refreshSummary() { const data = await api("/api/summary"); state.latestJob = data.job; const counts = Object.fromEntries((data.categories || []).map(item => [item.category, item.count])); Object.keys(window.CATEGORIES).forEach(key => $(`#count-${key}`).textContent = counts[key] || 0); $("#count-quarantine").textContent = data.library.quarantine || 0; $("#statActive").textContent = data.library.active || 0; $("#statQuarantine").textContent = data.library.quarantine || 0; $("#statUnsupported").textContent = data.unsupported || 0; $("#statPending").textContent = Object.entries(counts).filter(([key]) => key !== "quality").reduce((sum, [, value]) => sum + value, 0); $("#passwordWarning").classList.toggle("hidden", !data.warning); renderJob(data.job); $("#queueGrid").innerHTML = Object.entries(window.CATEGORIES).map(([key, label]) => `<button class="queue-card" data-category="${key}"><span>${escapeHtml(label)}</span><strong>${counts[key] || 0}</strong></button>`).join(""); $$("#queueGrid button").forEach(button => button.onclick = () => openReview(button.dataset.category)); }
 function renderJob(job) { const active = job || { state: "—", message: "Анализ ещё не запускался", total: 0, processed: 0, errors: 0 }; $("#jobState").textContent = active.state; $("#jobMessage").textContent = active.message || ""; $("#jobNumbers").textContent = `${active.processed || 0} из ${active.total || 0}`; $("#jobErrors").textContent = active.errors ? `Ошибок: ${active.errors}` : ""; $("#jobProgress").style.width = `${active.total ? Math.min(100, (active.processed || 0) / active.total * 100) : 0}%`; $("#jobActions").innerHTML = ["queued", "running", "paused"].includes(active.state) ? (active.state === "paused" ? `<button class="button" data-job="resume">Продолжить</button>` : `<button class="button" data-job="pause">Пауза</button>`) + `<button class="button danger" data-job="cancel">Остановить</button>` : ""; $$("[data-job]").forEach(button => button.onclick = async () => { await api(`/api/jobs/${active.id}/${button.dataset.job}`, { method: "POST" }); refreshSummary(); }); }
@@ -175,6 +180,9 @@ function setActiveLibraryNav(selector) {
   const current = selector && $(selector);
   if (current) current.classList.add("active");
 }
+function setActiveTopTab(section) {
+  $$(".top-tab").forEach(tab => tab.classList.toggle("active", tab.dataset.section === section));
+}
 async function loadLibraryShelves() {
   const data = await api("/api/library/shelves");
   const items = data.items || [];
@@ -182,6 +190,9 @@ async function loadLibraryShelves() {
   $("#photoShelves").innerHTML = items.map(item => `<button class="nav-item" data-shelf="${escapeHtml(item.year)}">${escapeHtml(item.year)}</button>`).join("");
   $("#photoEmpty").classList.toggle("hidden", items.length > 0);
   $$('[data-shelf]').forEach(button => button.onclick = () => openLibraryShelf(button.dataset.shelf));
+}
+async function ensureLibraryShelves() {
+  if (!$("#photoShelves").children.length) await loadLibraryShelves();
 }
 async function openLibraryShelf(shelf) {
   activateView("photo-year");
@@ -200,23 +211,29 @@ async function openLibraryAlbum(id, shelf) {
   $$('[data-library-media]').forEach(button => button.onclick = () => openPhoto(data.items.find(item => item.id === Number(button.dataset.libraryMedia)), "library"));
 }
 function openPhotoHome() {
+  setActiveTopTab("photos");
   activateView("photo-home");
   setActiveLibraryNav('[data-library-view="photo-home"]');
+  history.replaceState(null, "", "#photos");
   loadLibraryShelves().catch(error => toast(error.message));
 }
 function openSortingView(view = "dashboard") {
+  setActiveTopTab("sorting");
   activateView(view);
   $("#photoNav").classList.add("hidden");
   $("#sortingNav").classList.remove("hidden");
   $$("#sortingNav .nav-item").forEach(node => node.classList.toggle("active", node.dataset.view === view));
+  rememberView(view);
 }
 $$(".top-tab").forEach(tab => tab.onclick = () => {
   $$(".top-tab").forEach(item => item.classList.toggle("active", item === tab));
   if (tab.dataset.section === "photos") {
+    history.replaceState(null, "", "#photos");
     $("#photoNav").classList.remove("hidden");
     $("#sortingNav").classList.add("hidden");
     openPhotoHome();
   } else if (tab.dataset.section === "videos") {
+    history.replaceState(null, "", "#videos");
     $("#photoNav").addClass?.("hidden");
     $("#photoNav").classList.add("hidden");
     $("#sortingNav").classList.add("hidden");
@@ -235,13 +252,13 @@ $("#rescanLibrary").onclick = async () => {
   try { await api("/api/library/scan", { method: "POST", body: JSON.stringify({library_root: "photos"}) }); await loadLibraryShelves(); toast("Индекс обновлён"); }
   catch (error) { toast(error.message); }
 };
-openPhotoHome();
 let libraryShelf = null;
 function route(s,a,p){const h=a?`#shelf=${encodeURIComponent(s)}&album=${a}`:s?`#shelf=${encodeURIComponent(s)}`:"#photos";p?history.pushState(null,"",h):history.replaceState(null,"",h)}
-async function home(p=false){if(p)route(null,null,true);activateView("photo-home");$("#photoNav").classList.remove("hidden");$("#sortingNav").classList.add("hidden");const d=await api("/api/library/shelves");$("#shelfGrid").innerHTML=d.items.map(i=>`<button class="shelf-card" data-shelf="${escapeHtml(i.year)}"><span class="shelf-cover">${i.cover_media_id?`<img src="/thumbnail/${i.cover_media_id}" onerror="this.src='/photo/${i.cover_media_id}'">`:""}</span><strong>${escapeHtml(i.year)}</strong><span>${i.album_count} альбомов · ${i.media_count} фото</span></button>`).join("");$("#photoShelves").innerHTML=d.items.map(i=>`<button class="nav-item" data-shelf="${escapeHtml(i.year)}">${escapeHtml(i.year)}</button>`).join("");document.querySelectorAll("[data-shelf]").forEach(b=>b.onclick=()=>shelf(b.dataset.shelf,true))}
-async function shelf(s,p=false){libraryShelf=s;if(p)route(s,null,true);activateView("photo-year");$("#yearTitle").textContent=s;const d=await api(`/api/library/albums?year=${encodeURIComponent(s)}`);$("#albumGrid").innerHTML=d.items.map(i=>`<article class="album-card" data-album-card="${i.id}"><button class="album-open" data-album="${i.id}"><div class="album-cover">${i.cover_media_id?`<img src="/thumbnail/${i.cover_media_id}" onerror="this.src='/photo/${i.cover_media_id}'">`:""}</div><strong>${escapeHtml(i.name)}</strong><span>${i.media_count} фото</span></button></article>`).join("");document.querySelectorAll("[data-album]").forEach(b=>b.onclick=()=>album(+b.dataset.album,true))}
-async function album(id,p=false){if(p)route(libraryShelf,id,true);activateView("photo-album");const d=await api(`/api/library/media?container_id=${id}`);$("#libraryMedia").innerHTML=d.items.map(i=>`<article class="photo-card"><button class="photo-open" data-media="${i.id}"><img class="thumb" src="/thumbnail/${i.id}" onerror="this.src='/photo/${i.id}'"></button><div class="photo-info"><div class="path">${escapeHtml(i.file_name)}</div></div></article>`).join("");document.querySelectorAll("[data-media]").forEach(b=>b.onclick=()=>openPhoto(d.items.find(i=>i.id===+b.dataset.media),"library"))}
-window.onpopstate=()=>{const q=new URLSearchParams(location.hash.slice(1)),s=q.get("shelf"),a=+q.get("album");s&&a?(libraryShelf=s,album(a)):s?shelf(s):home()};$("#backToPhotos").onclick=()=>home(true);$("#backToYear").onclick=()=>shelf(libraryShelf,true);const oldOpen=openPhoto;openPhoto=(i,m)=>{if(m!=="library")return oldOpen(i,m);$("#photoDialogImage").src=`/photo/${i.id}`;$("#photoDialogPath").textContent=i.relative_path;$("#photoDialogReason").textContent="Оригинал остаётся на месте";$("#photoDialogActions").innerHTML=`<a class="button" href="/photo/${i.id}" target="_blank">Открыть оригинал</a><button class="button" id="closeLibraryPhoto">Закрыть</button>`;$("#closeLibraryPhoto").onclick=()=>$("#photoDialog").close();$("#photoDialog").showModal()};if(!location.hash)route(null,null,false);home();
+async function home(p=false){if(p)route(null,null,true);setActiveTopTab("photos");activateView("photo-home");$("#photoNav").classList.remove("hidden");$("#sortingNav").classList.add("hidden");const d=await api("/api/library/shelves");$("#shelfGrid").innerHTML=d.items.map(i=>`<button class="shelf-card" data-shelf="${escapeHtml(i.year)}"><span class="shelf-cover">${i.cover_media_id?`<img src="/thumbnail/${i.cover_media_id}" onerror="this.src='/photo/${i.cover_media_id}'">`:""}</span><strong>${escapeHtml(i.year)}</strong><span>${i.album_count} альбомов · ${i.media_count} фото</span></button>`).join("");$("#photoShelves").innerHTML=d.items.map(i=>`<button class="nav-item" data-shelf="${escapeHtml(i.year)}">${escapeHtml(i.year)}</button>`).join("");document.querySelectorAll("[data-shelf]").forEach(b=>b.onclick=()=>shelf(b.dataset.shelf,true))}
+async function shelf(s,p=false){libraryShelf=s;if(p)route(s,null,true);setActiveTopTab("photos");await ensureLibraryShelves();activateView("photo-year");$("#yearTitle").textContent=s;const d=await api(`/api/library/albums?year=${encodeURIComponent(s)}`);$("#albumGrid").innerHTML=d.items.map(i=>`<article class="album-card" data-album-card="${i.id}"><button class="album-open" data-album="${i.id}"><div class="album-cover">${i.cover_media_id?`<img src="/thumbnail/${i.cover_media_id}" onerror="this.src='/photo/${i.cover_media_id}'">`:""}</div><strong>${escapeHtml(i.name)}</strong><span>${i.media_count} фото</span></button></article>`).join("");document.querySelectorAll("[data-album]").forEach(b=>b.onclick=()=>album(+b.dataset.album,true))}
+async function album(id,p=false){if(p)route(libraryShelf,id,true);setActiveTopTab("photos");await ensureLibraryShelves();activateView("photo-album");const d=await api(`/api/library/media?container_id=${id}`);$("#libraryMedia").innerHTML=d.items.map(i=>`<article class="photo-card"><button class="photo-open" data-media="${i.id}"><img class="thumb" src="/thumbnail/${i.id}" onerror="this.src='/photo/${i.id}'"></button><div class="photo-info"><div class="path">${escapeHtml(i.file_name)}</div></div></article>`).join("");document.querySelectorAll("[data-media]").forEach(b=>b.onclick=()=>openPhoto(d.items.find(i=>i.id===+b.dataset.media),"library"))}
+async function restoreRouteFromHash(){const raw=location.hash.slice(1);const q=new URLSearchParams(raw);const review=q.get("review");if(review&&window.CATEGORIES[review])return openReview(review);if(raw==="videos"){setActiveTopTab("videos");$("#photoNav").classList.add("hidden");$("#sortingNav").classList.add("hidden");return activateView("videos")}if(raw==="unsorted")return loadUnsorted(1);const view=q.get("view")||(["dashboard","quarantine","settings","audit"].includes(raw)?raw:"");if(["dashboard","quarantine","settings","audit"].includes(view))return openSortingView(view);const s=q.get("shelf"),a=Number(q.get("album"));if(s&&a){libraryShelf=s;return album(a)}if(s)return shelf(s);if(!raw)route(null,null,false);return home()}
+window.onpopstate=()=>restoreRouteFromHash().catch(error=>toast(error.message));$("#backToPhotos").onclick=()=>home(true);$("#backToYear").onclick=()=>shelf(libraryShelf,true);const oldOpen=openPhoto;openPhoto=(i,m)=>{if(m!=="library")return oldOpen(i,m);$("#photoDialogImage").src=`/photo/${i.id}`;$("#photoDialogPath").textContent=i.relative_path;$("#photoDialogReason").textContent="Оригинал остаётся на месте";$("#photoDialogActions").innerHTML=`<a class="button" href="/photo/${i.id}" target="_blank">Открыть оригинал</a><button class="button" id="closeLibraryPhoto">Закрыть</button>`;$("#closeLibraryPhoto").onclick=()=>$("#photoDialog").close();$("#photoDialog").showModal()};
 const galleryPhotoOpen = openPhoto;
 openPhoto = (item, mode) => {
   if (mode !== "library") return galleryPhotoOpen(item, mode);
@@ -590,12 +607,15 @@ function renderUnsorted() {
 }
 async function loadUnsorted(page = 1, append = false) {
   if (unsorted.loading) return;
+  if (!append) history.replaceState(null, "", "#unsorted");
+  setActiveTopTab("photos");
   activateView("photo-unsorted");
   setActiveLibraryNav('[data-library-view="photo-unsorted"]');
   $("#photoNav").classList.remove("hidden");
   $("#sortingNav").classList.add("hidden");
   unsorted.loading = true;
   try {
+    await ensureLibraryShelves();
     if (!unsorted.sourcesLoaded) await loadUnsortedSources();
     const data = await api(`/api/library/unsorted?${unsortedQuery(page)}`);
     unsorted.page = page;
@@ -834,3 +854,4 @@ openPhoto = (item, mode) => {
   $("#unsortedPhotoQuarantine").onclick = async () => { await api("/api/library/unsorted/quarantine", { method: "POST", body: JSON.stringify({ media_ids: [item.id] }) }); $("#photoDialog").close(); await loadUnsorted(1); refreshSummary(); };
   if (!$("#photoDialog").open) $("#photoDialog").showModal();
 };
+restoreRouteFromHash().catch(error => toast(error.message));
