@@ -94,6 +94,57 @@ class StorageTests(unittest.TestCase):
             )
             self.assertEqual(log["action"], "delete")
 
+    def test_move_unsorted_media_to_album_updates_collection_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp_path = Path(directory)
+            photos = tmp_path / "photos"
+            quarantine = tmp_path / "quarantine"
+            unsorted_file = photos / "Unsorted" / "Manual Import" / "photo.jpg"
+            album = photos / "2026" / "Trip"
+            unsorted_file.parent.mkdir(parents=True)
+            album.mkdir(parents=True)
+            quarantine.mkdir()
+            unsorted_file.write_bytes(b"photo bytes")
+
+            database = Database(tmp_path / "data.sqlite3")
+            database.initialize()
+            container_id = database.execute(
+                """
+                INSERT INTO containers(
+                    library_root, media_type, kind, year, relative_path, name
+                ) VALUES ('photos', 'photo', 'album', '2026', '2026/Trip', 'Trip')
+                """
+            )
+            media_id = database.execute(
+                """
+                INSERT INTO media(
+                    relative_path, size, mtime_ns, sha256, status,
+                    library_root, media_type, file_name, parent_relative_path,
+                    collection_state, source_name, source_relative_path
+                ) VALUES (?, ?, ?, ?, 'active', 'photos', 'photo', ?, ?,
+                    'unsorted', 'Manual Import', 'Manual Import')
+                """,
+                (
+                    "Unsorted/Manual Import/photo.jpg",
+                    unsorted_file.stat().st_size,
+                    unsorted_file.stat().st_mtime_ns,
+                    Storage.checksum(unsorted_file),
+                    "photo.jpg",
+                    "Unsorted/Manual Import",
+                ),
+            )
+            storage = Storage(photos, quarantine, database)
+
+            moved = storage.move_media(media_id, "2026/Trip")
+
+            self.assertEqual(moved, "2026/Trip/photo.jpg")
+            row = database.one("SELECT * FROM media WHERE id=?", (media_id,))
+            self.assertEqual(row["collection_state"], "album")
+            self.assertEqual(row["container_id"], container_id)
+            self.assertEqual(row["source_name"], "Manual Import")
+            self.assertFalse(unsorted_file.exists())
+            self.assertEqual((album / "photo.jpg").read_bytes(), b"photo bytes")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -200,3 +200,80 @@ def install_upload_api(
             "failed_count": failed, "results": results,
         }
 
+    @app.post("/api/library/unsorted/photos", dependencies=dependencies)
+    async def upload_unsorted_photos(
+        request: Request, files: list[UploadFile] = File(...)
+    ):
+        if not files:
+            raise HTTPException(400, "No photos were selected")
+        if len(files) > config.upload_max_files:
+            raise HTTPException(413, f"At most {config.upload_max_files} photos may be uploaded")
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > config.upload_max_total_bytes + 64 * 1024:
+            raise HTTPException(413, "The total upload is too large")
+
+        folder = (config.photos_root / "Unsorted" / "Manual Import").resolve()
+        try:
+            folder.relative_to(config.photos_root.resolve())
+        except ValueError as exc:
+            raise HTTPException(409, "Unsorted directory is unavailable") from exc
+        folder.mkdir(parents=True, exist_ok=True)
+        if folder.is_symlink() or not folder.is_dir() or not os.access(folder, os.W_OK):
+            raise HTTPException(409, "Unsorted directory is unavailable")
+
+        upload_id = uuid.uuid4().hex
+        results: list[dict[str, object]] = []
+        successful = 0
+        total_bytes = 0
+
+        for upload in files:
+            original_name = upload.filename or "file"
+            temporary: Path | None = None
+            try:
+                safe_name = _safe_name(upload.filename)
+                temporary, size = await _write_temp(upload, folder, config.upload_max_file_bytes)
+                total_bytes += size
+                if total_bytes > config.upload_max_total_bytes:
+                    raise ValueError("TOTAL_TOO_LARGE")
+                suffix = Path(safe_name).suffix.lower()
+                _verify_image(temporary, suffix)
+                destination, renamed = _destination(folder, safe_name, temporary)
+                temporary = None
+                media_id = indexer.index_unsorted_file(destination.resolve())
+                successful += 1
+                results.append({
+                    "original_name": original_name,
+                    "stored_name": destination.name,
+                    "renamed": renamed,
+                    "status": "success",
+                    "photo": {"id": media_id, "name": destination.name},
+                })
+            except ValueError as exc:
+                messages = {
+                    "INVALID_NAME": ("INVALID_NAME", "Invalid file name."),
+                    "UNSUPPORTED_FORMAT": ("UNSUPPORTED_FORMAT", "Only JPEG, PNG, WebP, HEIC, and HEIF images are supported."),
+                    "EMPTY_FILE": ("EMPTY_FILE", "The file is empty."),
+                    "FILE_TOO_LARGE": ("FILE_TOO_LARGE", "The file exceeds the size limit."),
+                    "TOTAL_TOO_LARGE": ("TOTAL_TOO_LARGE", "The upload exceeds the total size limit."),
+                    "INVALID_IMAGE": ("INVALID_IMAGE", "The file could not be verified as an image."),
+                }
+                code, message = messages.get(str(exc), ("UPLOAD_FAILED", "The file could not be uploaded."))
+                results.append(_error(original_name, code, f"{original_name}: {message}"))
+            except OSError:
+                logger.exception("unsorted upload failed upload_id=%s file=%s", upload_id, original_name)
+                results.append(_error(original_name, "SAVE_FAILED", f"{original_name}: the file could not be saved in Unsorted."))
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+                await upload.close()
+
+        failed = len(results) - successful
+        logger.info("unsorted upload completed upload_id=%s requested=%s successful=%s failed=%s", upload_id, len(files), successful, failed)
+        return {
+            "upload_id": upload_id,
+            "requested_count": len(files),
+            "successful_count": successful,
+            "failed_count": failed,
+            "results": results,
+        }
+

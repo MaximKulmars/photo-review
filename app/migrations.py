@@ -177,6 +177,59 @@ MIGRATIONS = (
             "ALTER TABLE media DROP COLUMN library_root",
             "ALTER TABLE media DROP COLUMN media_type",
         ),
+    ),
+    Migration(
+        6,
+        "unsorted_section",
+        (
+            "ALTER TABLE media ADD COLUMN collection_state TEXT NOT NULL DEFAULT 'album'",
+            "ALTER TABLE media ADD COLUMN source_name TEXT",
+            "ALTER TABLE media ADD COLUMN source_relative_path TEXT",
+            "ALTER TABLE media ADD COLUMN imported_at TEXT NOT NULL DEFAULT '1970-01-01 00:00:00'",
+            "ALTER TABLE media ADD COLUMN date_source TEXT NOT NULL DEFAULT 'import'",
+            "UPDATE media SET imported_at=CURRENT_TIMESTAMP",
+            """
+            UPDATE media SET collection_state=CASE
+                WHEN status='quarantine' THEN 'quarantine'
+                WHEN library_root='photos' AND relative_path LIKE 'Unsorted/%'
+                  AND container_id IS NULL THEN 'unsorted'
+                ELSE 'album'
+            END
+            """,
+            """
+            UPDATE media SET source_name=CASE
+                WHEN collection_state='unsorted'
+                  AND parent_relative_path IS NOT NULL
+                  AND parent_relative_path <> 'Unsorted'
+                THEN substr(
+                    substr(parent_relative_path, length('Unsorted/') + 1),
+                    1,
+                    instr(substr(parent_relative_path, length('Unsorted/') + 1) || '/', '/') - 1
+                )
+                ELSE NULL
+            END
+            """,
+            """
+            UPDATE media SET source_relative_path=CASE
+                WHEN collection_state='unsorted'
+                  AND parent_relative_path IS NOT NULL
+                  AND parent_relative_path <> 'Unsorted'
+                THEN substr(parent_relative_path, length('Unsorted/') + 1)
+                ELSE NULL
+            END
+            """,
+            "CREATE INDEX media_collection_idx ON media(library_root, media_type, collection_state, status, index_state)",
+            "CREATE INDEX media_source_idx ON media(source_name)",
+        ),
+        (
+            "DROP INDEX IF EXISTS media_source_idx",
+            "DROP INDEX IF EXISTS media_collection_idx",
+            "ALTER TABLE media DROP COLUMN date_source",
+            "ALTER TABLE media DROP COLUMN imported_at",
+            "ALTER TABLE media DROP COLUMN source_relative_path",
+            "ALTER TABLE media DROP COLUMN source_name",
+            "ALTER TABLE media DROP COLUMN collection_state",
+        ),
     ),)
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -219,8 +272,13 @@ def detect_schema_version(connection: sqlite3.Connection) -> int:
         has_scan_job = "last_scan_job_id" in media_columns
         has_manual_quality = "manual_quality" in media_columns
         library_columns = {"media_type", "library_root", "file_name", "parent_relative_path", "mime_type", "container_id", "index_state", "missing_since"}
+        unsorted_columns = {"collection_state", "source_name", "source_relative_path", "imported_at", "date_source"}
         library_count = len(library_columns & media_columns)
         has_library_index = library_count == len(library_columns) and "containers" in tables
+        unsorted_count = len(unsorted_columns & media_columns)
+        has_unsorted_section = unsorted_count == len(unsorted_columns)
+        if unsorted_count and not has_unsorted_section:
+            raise MigrationError("Структура раздела «Неразобранное» применена частично")
         if library_count and not has_library_index:
             raise MigrationError("Структура медиатеки содержит частично применённую миграцию")
         job_type_columns = {"kind", "payload"} & job_columns
@@ -234,7 +292,9 @@ def detect_schema_version(connection: sqlite3.Connection) -> int:
         if has_manual_quality and not has_scan_job:
             raise MigrationError("Структура таблицы media непоследовательна")
         inferred = (
-            5
+            6
+            if has_unsorted_section
+            else 5
             if has_library_index
             else 4
             if has_job_type

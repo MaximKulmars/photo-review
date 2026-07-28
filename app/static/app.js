@@ -474,3 +474,153 @@ album = async (id, push = false) => {
   await albumPagedOpen(id, push);
   await loadAlbumPage(true);
 };
+
+const unsorted = { page: 1, total: 0, items: [], selected: new Set(), sourcesLoaded: false };
+const monthNames = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+function photoWord(count) {
+  const lastTwo = Math.abs(count) % 100;
+  const last = lastTwo % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return "фотографий";
+  if (last === 1) return "фотография";
+  if (last >= 2 && last <= 4) return "фотографии";
+  return "фотографий";
+}
+function unsortedQuery(page = 1) {
+  const params = new URLSearchParams({ page, page_size: 96, date_status: $("#unsortedDateStatus").value });
+  const source = $("#unsortedSource").value;
+  if (source !== "__all") params.set("source_name", source);
+  if ($("#unsortedYear").value) params.set("year", $("#unsortedYear").value);
+  if ($("#unsortedMonth").value) params.set("month", $("#unsortedMonth").value);
+  return params;
+}
+async function loadUnsortedSources() {
+  const data = await api("/api/library/unsorted/sources");
+  $("#unsortedSource").innerHTML = '<option value="__all">Все источники</option>' + (data.items || []).map(item => `<option value="${escapeHtml(item.source_name ?? "")}">${escapeHtml(item.label)} · ${item.count}</option>`).join("");
+  unsorted.sourcesLoaded = true;
+}
+function ensureUnsortedYears(items) {
+  const years = [...new Set(items.map(item => new Date(item.effective_date || item.imported_at).getFullYear()).filter(Number.isFinite))].sort((a, b) => b - a);
+  const current = $("#unsortedYear").value;
+  $("#unsortedYear").innerHTML = '<option value="">Все годы</option>' + years.map(year => `<option value="${year}">${year}</option>`).join("");
+  $("#unsortedYear").value = years.includes(Number(current)) ? current : "";
+  $("#unsortedMonth").innerHTML = '<option value="">Все месяцы</option>' + monthNames.map((name, index) => `<option value="${index + 1}">${name}</option>`).join("");
+}
+function unsortedCard(item) {
+  const source = item.source_name || "Без источника";
+  const dateNote = item.captured_at ? `Съёмка: ${displayDate(item.captured_at)}` : `Дата съёмки не определена · Импорт: ${displayDate(item.imported_at)}`;
+  return `<article class="photo-card" data-unsorted-card="${item.id}"><input type="checkbox" data-unsorted-id="${item.id}" aria-label="Выбрать"><button class="photo-open" type="button"><img class="thumb" src="/library-preview/${item.id}" onerror="this.onerror=null;this.src='/photo/${item.id}'" alt="${escapeHtml(item.file_name || item.relative_path)}"></button><div class="photo-info"><div class="path">${escapeHtml(item.file_name || item.relative_path)}</div><div class="reason">${escapeHtml(source)}${item.source_relative_path ? ` · ${escapeHtml(item.source_relative_path)}` : ""}</div><div class="meta"><span>${escapeHtml(dateNote)}</span><span>${bytes(item.size)}</span></div></div></article>`;
+}
+function renderUnsorted() {
+  $("#unsortedSummary").textContent = `${unsorted.total} ${photoWord(unsorted.total)} · выбрано ${unsorted.selected.size}`;
+  $("#unsortedEmpty").classList.toggle("hidden", unsorted.items.length !== 0);
+  $("#unsortedCards").innerHTML = unsorted.items.map(unsortedCard).join("");
+  $$("[data-unsorted-card]").forEach((node, index) => {
+    const item = unsorted.items[index];
+    const checkbox = $("[data-unsorted-id]", node);
+    checkbox.checked = unsorted.selected.has(item.id);
+    node.classList.toggle("selected", checkbox.checked);
+    checkbox.onchange = () => {
+      checkbox.checked ? unsorted.selected.add(item.id) : unsorted.selected.delete(item.id);
+      node.classList.toggle("selected", checkbox.checked);
+      $("#unsortedSummary").textContent = `${unsorted.total} ${photoWord(unsorted.total)} · выбрано ${unsorted.selected.size}`;
+    };
+    $(".photo-open", node).onclick = () => openPhoto(item, "unsorted");
+  });
+  $("#unsortedPagination").innerHTML = unsorted.total > unsorted.items.length ? '<button class="button" id="unsortedMore" type="button">Показать ещё</button>' : "";
+  $("#unsortedMore") && ($("#unsortedMore").onclick = () => loadUnsorted(false));
+}
+async function loadUnsorted(reset = true) {
+  activateView("photo-unsorted");
+  setActiveLibraryNav('[data-library-view="photo-unsorted"]');
+  $("#photoNav").classList.remove("hidden");
+  $("#sortingNav").classList.add("hidden");
+  if (!unsorted.sourcesLoaded) await loadUnsortedSources();
+  const page = reset ? 1 : unsorted.page + 1;
+  const data = await api(`/api/library/unsorted?${unsortedQuery(page)}`);
+  unsorted.page = page;
+  unsorted.total = data.total;
+  unsorted.items = reset ? data.items : [...unsorted.items, ...data.items];
+  if (reset) unsorted.selected.clear();
+  ensureUnsortedYears(unsorted.items);
+  renderUnsorted();
+}
+function selectedUnsortedIds() {
+  return [...unsorted.selected];
+}
+function uploadUnsortedPhotos(files) {
+  const selected = [...files];
+  if (!selected.length) return;
+  const form = new FormData();
+  selected.forEach(file => form.append("files", file, file.name));
+  $("#unsortedUploadStatus").classList.remove("hidden");
+  $("#unsortedUploadTitle").textContent = `Добавляем ${selected.length} ${photoWord(selected.length)}`;
+  $("#unsortedUploadMessage").textContent = "Передаём файлы";
+  $("#unsortedUploadProgress").style.width = "20%";
+  fetch("/api/library/unsorted/photos", { method: "POST", body: form })
+    .then(async response => {
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || "Не удалось загрузить фотографии");
+      const errors = (data.results || []).filter(item => item.status !== "success").map(item => item.message || "Файл не добавлен");
+      $("#unsortedUploadTitle").textContent = data.successful_count ? `Добавлено: ${data.successful_count} из ${data.requested_count}` : "Фотографии не добавлены";
+      $("#unsortedUploadMessage").textContent = errors.length ? "Некоторые файлы не были добавлены." : "Готово";
+      $("#unsortedUploadProgress").style.width = "100%";
+      $("#unsortedUploadErrors").innerHTML = errors.map(error => `<li>${escapeHtml(error)}</li>`).join("");
+      unsorted.sourcesLoaded = false;
+      return loadUnsorted(true);
+    })
+    .catch(error => {
+      $("#unsortedUploadTitle").textContent = "Фотографии не добавлены";
+      $("#unsortedUploadMessage").textContent = error.message;
+      $("#unsortedUploadProgress").style.width = "0";
+    });
+}
+document.querySelector('[data-library-view="photo-unsorted"]').onclick = () => loadUnsorted(true).catch(error => toast(error.message));
+document.querySelector('[data-library-view="photo-home"]').onclick = () => home(true);
+["#unsortedSource", "#unsortedYear", "#unsortedMonth", "#unsortedDateStatus"].forEach(selector => $(selector).onchange = () => loadUnsorted(true).catch(error => toast(error.message)));
+$("#unsortedRefresh").onclick = async () => { await api("/api/library/scan", { method: "POST", body: JSON.stringify({ library_root: "photos" }) }); unsorted.sourcesLoaded = false; await loadUnsorted(true); toast("Индекс обновлён"); };
+$("#addUnsortedPhotos").onclick = () => $("#unsortedPhotoInput").click();
+$("#unsortedPhotoInput").onchange = () => { uploadUnsortedPhotos($("#unsortedPhotoInput").files); $("#unsortedPhotoInput").value = ""; };
+$("#unsortedSelectAll").onclick = () => {
+  unsorted.items.forEach(item => unsorted.selected.add(item.id));
+  renderUnsorted();
+};
+$("#unsortedMove").onclick = () => {
+  const ids = selectedUnsortedIds();
+  if (!ids.length) return toast("Сначала выберите фотографии");
+  beginTransfer("move", ids);
+  state.transfer.fromUnsorted = true;
+};
+$("#unsortedQuarantine").onclick = async () => {
+  const ids = selectedUnsortedIds();
+  if (!ids.length) return toast("Сначала выберите фотографии");
+  await api("/api/library/unsorted/quarantine", { method: "POST", body: JSON.stringify({ media_ids: ids }) });
+  toast("Фотографии перемещены в карантин");
+  await loadUnsorted(true);
+  refreshSummary();
+};
+const unsortedTransferConfirm = $("#transferConfirm").onclick;
+$("#transferConfirm").onclick = async () => {
+  const fromUnsorted = Boolean(state.transfer?.fromUnsorted);
+  await unsortedTransferConfirm();
+  if (fromUnsorted) {
+    unsorted.sourcesLoaded = false;
+    await loadUnsorted(true);
+  }
+};
+const unsortedOpenPhoto = openPhoto;
+openPhoto = (item, mode) => {
+  if (mode !== "unsorted") return unsortedOpenPhoto(item, mode);
+  state.photoItem = item;
+  state.photoMode = mode;
+  $("#photoDialog").classList.remove("gallery-mode");
+  $("#photoDialogImage").src = `/photo/${item.id}`;
+  $("#photoDialogPath").textContent = item.relative_path;
+  $("#photoDialogReason").textContent = `${item.source_name || "Без источника"} · ${item.captured_at ? "Дата съёмки определена" : "Дата съёмки не определена, используется дата импорта"}`;
+  $("#photoDialogDate").textContent = item.captured_at ? displayDate(item.captured_at) : displayDate(item.imported_at);
+  $("#photoDialogSize").textContent = bytes(item.size);
+  $("#photoDialogDimensions").textContent = `${item.width || "?"} × ${item.height || "?"}`;
+  $("#photoDialogActions").innerHTML = `<button class="button primary" id="unsortedPhotoMove">Переместить в альбом</button><button class="button danger" id="unsortedPhotoQuarantine">В карантин</button><a class="button" href="/photo/${item.id}" target="_blank" rel="noopener">Оригинал</a>`;
+  $("#unsortedPhotoMove").onclick = () => { beginTransfer("move", [item.id]); state.transfer.fromUnsorted = true; };
+  $("#unsortedPhotoQuarantine").onclick = async () => { await api("/api/library/unsorted/quarantine", { method: "POST", body: JSON.stringify({ media_ids: [item.id] }) }); $("#photoDialog").close(); await loadUnsorted(true); refreshSummary(); };
+  if (!$("#photoDialog").open) $("#photoDialog").showModal();
+};

@@ -42,7 +42,7 @@ class Storage:
             connection.execute(
                 """
                 UPDATE media SET status='quarantine', quarantine_path=?,
-                    updated_at=CURRENT_TIMESTAMP WHERE id=?
+                    collection_state='quarantine', updated_at=CURRENT_TIMESTAMP WHERE id=?
                 """,
                 (quarantine_relative, media_id),
             )
@@ -72,12 +72,15 @@ class Storage:
         self._safe_move(source, destination, row["sha256"])
         restored_relative = destination.relative_to(self.photos).as_posix()
         with self.db.connect() as connection:
+            container_id = self._container_id_for_relative(connection, restored_relative)
+            collection_state = "unsorted" if restored_relative.startswith("Unsorted/") else "album"
             connection.execute(
                 """
                 UPDATE media SET relative_path=?, status='active',
-                    quarantine_path=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?
+                    quarantine_path=NULL, container_id=?, collection_state=?,
+                    updated_at=CURRENT_TIMESTAMP WHERE id=?
                 """,
-                (restored_relative, media_id),
+                (restored_relative, container_id, collection_state, media_id),
             )
             connection.execute(
                 "UPDATE findings SET decision='later' WHERE media_id=?", (media_id,)
@@ -126,13 +129,22 @@ class Storage:
         relative = destination.relative_to(self.photos).as_posix()
         stat = destination.stat()
         with self.db.connect() as connection:
+            container_id = self._container_id_for_relative(connection, relative)
+            collection_state = "album" if container_id is not None else (
+                "unsorted" if relative.startswith("Unsorted/") else "album"
+            )
             connection.execute(
                 """
-                UPDATE media SET relative_path=?, size=?, mtime_ns=?,
+                UPDATE media SET relative_path=?, file_name=?, size=?, mtime_ns=?,
+                    parent_relative_path=?, container_id=?, collection_state=?,
                     last_scan_job_id=NULL, manual_quality=0,
                     updated_at=CURRENT_TIMESTAMP WHERE id=?
                 """,
-                (relative, stat.st_size, stat.st_mtime_ns, media_id),
+                (
+                    relative, destination.name, stat.st_size, stat.st_mtime_ns,
+                    destination.parent.relative_to(self.photos).as_posix(),
+                    container_id, collection_state, media_id,
+                ),
             )
             connection.execute("DELETE FROM findings WHERE media_id=?", (media_id,))
             connection.execute(
@@ -208,6 +220,21 @@ class Storage:
             if not candidate.exists():
                 return candidate
             counter += 1
+
+    @staticmethod
+    def _container_id_for_relative(connection, relative_path: str) -> int | None:
+        parent = Path(relative_path).parent.as_posix()
+        if parent == ".":
+            parent = ""
+        row = connection.execute(
+            """
+            SELECT id FROM containers
+            WHERE library_root='photos' AND media_type='photo' AND kind='album'
+              AND relative_path=? AND missing_since IS NULL
+            """,
+            (parent,),
+        ).fetchone()
+        return int(row["id"]) if row else None
 
     def _remove_empty_parents(self, start: Path) -> None:
         current = start

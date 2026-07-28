@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .config import Config
@@ -25,6 +26,16 @@ class AlbumCreateRequest(BaseModel):
 
 class AlbumRenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+
+
+class UnsortedToAlbumRequest(BaseModel):
+    media_ids: list[int] = Field(min_length=1, max_length=500)
+    container_id: int
+    rename_on_conflict: bool = False
+
+
+class MediaIdsRequest(BaseModel):
+    media_ids: list[int] = Field(min_length=1, max_length=500)
 
 
 def _single_visible_folder_name(value: str, field_name: str) -> str:
@@ -80,6 +91,7 @@ def install_library_api(
             FROM media
             WHERE library_root=? AND media_type=?
               AND index_state='indexed' AND status='active'
+              AND collection_state='album'
             GROUP BY year
             ORDER BY year
             """,
@@ -117,6 +129,7 @@ def install_library_api(
             SELECT c.*, COUNT(m.id) AS media_count, MIN(m.id) AS cover_media_id
             FROM containers c LEFT JOIN media m ON m.container_id=c.id
               AND m.index_state='indexed' AND m.status='active'
+              AND m.collection_state='album'
             WHERE c.library_root=? AND c.media_type=? AND c.year=?
               AND c.missing_since IS NULL
             GROUP BY c.id ORDER BY c.name COLLATE NOCASE
@@ -124,6 +137,153 @@ def install_library_api(
             (library_root, media_type, year),
         )
         return {"items": [{key: row[key] for key in row.keys()} for row in rows]}
+
+    @app.get("/api/library/unsorted/sources", dependencies=dependencies)
+    def unsorted_sources():
+        rows = database.all(
+            """
+            SELECT source_name, COUNT(*) AS count FROM media
+            WHERE library_root='photos' AND media_type='photo'
+              AND collection_state='unsorted' AND index_state='indexed'
+              AND status='active'
+            GROUP BY source_name
+            ORDER BY source_name IS NOT NULL, source_name COLLATE NOCASE
+            """
+        )
+        return {
+            "items": [
+                {
+                    "source_name": row["source_name"],
+                    "label": row["source_name"] or "Без источника",
+                    "count": row["count"],
+                }
+                for row in rows
+            ]
+        }
+
+    @app.get("/api/library/unsorted", dependencies=dependencies)
+    def unsorted_media(
+        source_name: str | None = None,
+        year: int | None = None,
+        month: int | None = None,
+        date_status: Literal["all", "captured", "missing"] = "all",
+        page: int = 1,
+        page_size: int = 96,
+    ):
+        where = [
+            "library_root='photos'",
+            "media_type='photo'",
+            "collection_state='unsorted'",
+            "index_state='indexed'",
+            "status='active'",
+        ]
+        params: list[object] = []
+        if source_name is not None:
+            if source_name == "":
+                where.append("source_name IS NULL")
+            else:
+                where.append("source_name=?")
+                params.append(source_name)
+        if date_status == "captured":
+            where.append("captured_at IS NOT NULL")
+        elif date_status == "missing":
+            where.append("captured_at IS NULL")
+        effective = "COALESCE(captured_at, imported_at)"
+        if year is not None:
+            where.append(f"strftime('%Y', {effective})=?")
+            params.append(f"{year:04d}")
+        if month is not None:
+            if month < 1 or month > 12:
+                raise HTTPException(400, "Недопустимый месяц")
+            where.append(f"strftime('%m', {effective})=?")
+            params.append(f"{month:02d}")
+        clause = " AND ".join(where)
+        page, page_size = max(page, 1), min(max(page_size, 1), 200)
+        total = database.one(
+            f"SELECT COUNT(*) AS count FROM media WHERE {clause}", tuple(params)
+        )["count"]
+        rows = database.all(
+            f"""
+            SELECT id, relative_path, file_name, parent_relative_path, mime_type,
+              size, width, height, captured_at, imported_at, date_source,
+              source_name, source_relative_path, {effective} AS effective_date
+            FROM media WHERE {clause}
+            ORDER BY {effective} DESC, relative_path COLLATE NOCASE
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_size, (page - 1) * page_size),
+        )
+        return {
+            "items": [{key: row[key] for key in row.keys()} for row in rows],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+
+    @app.post("/api/library/unsorted/move-to-album", dependencies=dependencies)
+    def move_unsorted_to_album(payload: UnsortedToAlbumRequest):
+        from .storage import Storage
+
+        row = database.one(
+            """
+            SELECT relative_path FROM containers
+            WHERE id=? AND library_root='photos' AND media_type='photo'
+              AND kind='album' AND missing_since IS NULL
+            """,
+            (payload.container_id,),
+        )
+        if row is None:
+            raise HTTPException(404, "Альбом не найден")
+        storage = Storage(config.photos_root, config.quarantine_root, database)
+        completed, failures = [], []
+        for media_id in payload.media_ids:
+            media = database.one(
+                """
+                SELECT id FROM media
+                WHERE id=? AND collection_state='unsorted' AND status='active'
+                """,
+                (media_id,),
+            )
+            if media is None:
+                failures.append({"media_id": media_id, "error": "Фотография не найдена в «Неразобранном»"})
+                continue
+            try:
+                completed.append({
+                    "media_id": media_id,
+                    "path": storage.move_media(media_id, row["relative_path"], payload.rename_on_conflict),
+                })
+            except (OSError, ValueError) as exc:
+                failures.append({"media_id": media_id, "error": str(exc)})
+        return JSONResponse(
+            {"completed": completed, "failures": failures},
+            status_code=200 if not failures else 409,
+        )
+
+    @app.post("/api/library/unsorted/quarantine", dependencies=dependencies)
+    def quarantine_unsorted(payload: MediaIdsRequest):
+        from .storage import Storage
+
+        storage = Storage(config.photos_root, config.quarantine_root, database)
+        moved, failures = [], []
+        for media_id in payload.media_ids:
+            media = database.one(
+                """
+                SELECT id FROM media
+                WHERE id=? AND collection_state='unsorted' AND status='active'
+                """,
+                (media_id,),
+            )
+            if media is None:
+                failures.append({"media_id": media_id, "error": "Фотография не найдена в «Неразобранном»"})
+                continue
+            try:
+                moved.append({"media_id": media_id, "path": storage.quarantine_media(media_id)})
+            except (OSError, ValueError) as exc:
+                failures.append({"media_id": media_id, "error": str(exc)})
+        return JSONResponse(
+            {"moved": moved, "failures": failures},
+            status_code=200 if not failures else 409,
+        )
 
     @app.post("/api/library/albums", dependencies=dependencies, status_code=201)
     def create_album(payload: AlbumCreateRequest):
@@ -226,6 +386,8 @@ def install_library_api(
         if container_id is not None:
             where.append("container_id=?")
             params.append(container_id)
+        else:
+            where.append("collection_state='album'")
         clause = " AND ".join(where)
         page, page_size = max(page, 1), min(max(page_size, 1), 100)
         total = database.one(

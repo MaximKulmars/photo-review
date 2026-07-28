@@ -10,6 +10,7 @@ from .db import Database
 
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
+UNSORTED_FOLDER = "Unsorted"
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ class LibraryIndexer:
 
             for year_folder in self._visible_directories(root):
                 shelf_name = year_folder.name
-                if shelf_name == "Unsorted":
+                if shelf_name == UNSORTED_FOLDER:
                     indexed += self._index_tree(
                         connection, root, year_folder, library_root, media_type,
                         extensions, None, seen_paths
@@ -205,9 +206,18 @@ class LibraryIndexer:
             (library_root, relative),
         ).fetchone()
         mime_type = mimetypes.guess_type(path.name)[0]
+        collection_state = (
+            "unsorted"
+            if library_root == "photos"
+            and container_id is None
+            and (relative == UNSORTED_FOLDER or relative.startswith(f"{UNSORTED_FOLDER}/"))
+            else "album"
+        )
+        source_name, source_relative_path = self._unsorted_source(relative)
         values = (
             media_type, library_root, path.name, parent, mime_type, container_id,
-            stat.st_size, stat.st_mtime_ns, relative,
+            stat.st_size, stat.st_mtime_ns, collection_state, source_name,
+            source_relative_path, relative,
         )
         if row:
             changed = (
@@ -220,7 +230,8 @@ class LibraryIndexer:
                 """
                 UPDATE media SET media_type=?, library_root=?, file_name=?,
                     parent_relative_path=?, mime_type=?, container_id=?, size=?,
-                    mtime_ns=?, index_state='indexed', missing_since=NULL,
+                    mtime_ns=?, collection_state=?, source_name=?,
+                    source_relative_path=?, index_state='indexed', missing_since=NULL,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
                 """,
@@ -231,15 +242,28 @@ class LibraryIndexer:
             """
             INSERT INTO media(
                 relative_path, size, mtime_ns, media_type, library_root, file_name,
-                parent_relative_path, mime_type, container_id, index_state
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'indexed')
+                parent_relative_path, mime_type, container_id, collection_state,
+                source_name, source_relative_path, imported_at, date_source, index_state
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'import', 'indexed')
             """,
             (
                 relative, stat.st_size, stat.st_mtime_ns, media_type, library_root,
-                path.name, parent, mime_type, container_id,
+                path.name, parent, mime_type, container_id, collection_state,
+                source_name, source_relative_path,
             ),
         )
         return True
+
+    @staticmethod
+    def _unsorted_source(relative_path: str) -> tuple[str | None, str | None]:
+        prefix = f"{UNSORTED_FOLDER}/"
+        if not relative_path.startswith(prefix):
+            return None, None
+        parts = relative_path[len(prefix):].split("/")
+        if len(parts) <= 1:
+            return None, None
+        source_relative_path = "/".join(parts[:-1])
+        return parts[0], source_relative_path
 
     def index_album_file(self, container_id: int, path: Path) -> int:
         """Register one already-written photo in its existing album container."""
@@ -266,5 +290,25 @@ class LibraryIndexer:
             row = connection.execute(
                 "SELECT id FROM media WHERE library_root='photos' AND relative_path=? AND status='active'",
                 (resolved.relative_to(root).as_posix(),),
+            ).fetchone()
+            return int(row["id"])
+
+    def index_unsorted_file(self, path: Path) -> int:
+        """Register one already-written photo under the system Unsorted folder."""
+        root = self.roots["photos"]
+        resolved = path.resolve()
+        try:
+            relative = resolved.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise ValueError("Invalid unsorted file") from exc
+        if not relative.startswith(f"{UNSORTED_FOLDER}/"):
+            raise ValueError("Invalid unsorted file")
+        if not resolved.is_file() or resolved.is_symlink():
+            raise ValueError("Invalid unsorted file")
+        with self.database.connect() as connection:
+            self._upsert_media(connection, root, resolved, "photos", "photo", None)
+            row = connection.execute(
+                "SELECT id FROM media WHERE library_root='photos' AND relative_path=? AND status='active'",
+                (relative,),
             ).fetchone()
             return int(row["id"])
