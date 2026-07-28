@@ -405,8 +405,23 @@ function uploadAlbumPhotos(files) {
   };
   request.send(form);
 }
-albumUploadButton.onclick = () => { if (!albumUpload.active) albumUploadInput.click(); };
-albumUploadInput.onchange = () => uploadAlbumPhotos(albumUploadInput.files);
+const albumUploadDialog = $("#albumUploadDialog");
+const albumDropZone = $("#albumDropZone");
+function startAlbumUpload(files) {
+  if (!files.length || albumUpload.active) return;
+  if (albumUploadDialog.open) albumUploadDialog.close();
+  uploadAlbumPhotos(files);
+}
+albumUploadButton.onclick = () => { if (!albumUpload.active) albumUploadDialog.showModal(); };
+$("#albumUploadBrowse").onclick = () => albumUploadInput.click();
+$("#albumUploadDialogClose").onclick = () => albumUploadDialog.close();
+albumUploadInput.onchange = () => startAlbumUpload(albumUploadInput.files);
+["dragenter", "dragover", "dragleave", "drop"].forEach(eventName => {
+  albumDropZone.addEventListener(eventName, event => { event.preventDefault(); event.stopPropagation(); });
+});
+["dragenter", "dragover"].forEach(eventName => albumDropZone.addEventListener(eventName, () => albumDropZone.classList.add("drag-over")));
+["dragleave", "drop"].forEach(eventName => albumDropZone.addEventListener(eventName, () => albumDropZone.classList.remove("drag-over")));
+albumDropZone.addEventListener("drop", event => startAlbumUpload([...event.dataTransfer.files]));
 const albumRenderWithUpload = album;
 album = async (id, push = false) => {
   albumUpload.albumId = Number(id);
