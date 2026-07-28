@@ -167,8 +167,9 @@ def install_library_api(
         year: int | None = None,
         month: int | None = None,
         date_status: Literal["all", "captured", "missing"] = "all",
+        sort: Literal["desc", "asc"] = "desc",
         page: int = 1,
-        page_size: int = 96,
+        page_size: int = 48,
     ):
         where = [
             "library_root='photos'",
@@ -199,16 +200,33 @@ def install_library_api(
             params.append(f"{month:02d}")
         clause = " AND ".join(where)
         page, page_size = max(page, 1), min(max(page_size, 1), 200)
+        order_direction = "ASC" if sort == "asc" else "DESC"
         total = database.one(
             f"SELECT COUNT(*) AS count FROM media WHERE {clause}", tuple(params)
         )["count"]
+        year_rows = database.all(
+            f"""
+            SELECT strftime('%Y', {effective}) AS year, COUNT(*) AS count
+            FROM media WHERE {clause}
+            GROUP BY year ORDER BY year DESC
+            """,
+            tuple(params),
+        )
+        month_rows = database.all(
+            f"""
+            SELECT strftime('%m', {effective}) AS month, COUNT(*) AS count
+            FROM media WHERE {clause}
+            GROUP BY month ORDER BY month DESC
+            """,
+            tuple(params),
+        )
         rows = database.all(
             f"""
             SELECT id, relative_path, file_name, parent_relative_path, mime_type,
               size, width, height, captured_at, imported_at, date_source,
               source_name, source_relative_path, {effective} AS effective_date
             FROM media WHERE {clause}
-            ORDER BY {effective} DESC, relative_path COLLATE NOCASE
+            ORDER BY {effective} {order_direction}, relative_path COLLATE NOCASE
             LIMIT ? OFFSET ?
             """,
             (*params, page_size, (page - 1) * page_size),
@@ -218,6 +236,10 @@ def install_library_api(
             "total": total,
             "page": page,
             "page_size": page_size,
+            "facets": {
+                "years": [{key: row[key] for key in row.keys()} for row in year_rows],
+                "months": [{key: row[key] for key in row.keys()} for row in month_rows],
+            },
         }
 
     @app.post("/api/library/unsorted/move-to-album", dependencies=dependencies)
