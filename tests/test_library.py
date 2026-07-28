@@ -2,6 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image
+
 from app.db import Database
 from app.library import LibraryIndexer
 
@@ -49,6 +51,29 @@ class LibraryIndexerTests(unittest.TestCase):
             )
             self.assertEqual(album_photo["collection_state"], "album")
             self.assertIsNotNone(album_photo["container_id"])
+
+    def test_scan_extracts_exif_capture_date_for_unsorted_filters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            photos = root / "photos"
+            target = photos / "Unsorted" / "Camera" / "old.jpg"
+            target.parent.mkdir(parents=True)
+
+            image = Image.new("RGB", (8, 8), "white")
+            exif = Image.Exif()
+            exif[36867] = "2022:05:04 10:30:00"
+            image.save(target, exif=exif)
+
+            database = Database(root / "data.sqlite3")
+            database.initialize()
+            LibraryIndexer(database, {"photos": photos}).scan("photos")
+
+            row = database.one(
+                "SELECT captured_at, date_source FROM media WHERE relative_path=?",
+                ("Unsorted/Camera/old.jpg",),
+            )
+            self.assertEqual(row["captured_at"], "2022-05-04T10:30:00")
+            self.assertEqual(row["date_source"], "metadata")
 
 
 if __name__ == "__main__":

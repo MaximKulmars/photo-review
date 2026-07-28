@@ -3,7 +3,10 @@
 import mimetypes
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+
+from PIL import ExifTags, Image
 
 from .db import Database
 
@@ -11,6 +14,7 @@ from .db import Database
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 UNSORTED_FOLDER = "Unsorted"
+EXIF_NAME = {value: key for key, value in ExifTags.TAGS.items()}
 
 
 @dataclass(frozen=True)
@@ -200,7 +204,8 @@ class LibraryIndexer:
         parent = path.parent.relative_to(root).as_posix()
         row = connection.execute(
             """
-            SELECT id, size, mtime_ns, file_name, parent_relative_path, container_id
+            SELECT id, size, mtime_ns, file_name, parent_relative_path, container_id,
+              captured_at, date_source
             FROM media WHERE library_root=? AND relative_path=? AND status='active'
             """,
             (library_root, relative),
@@ -214,10 +219,11 @@ class LibraryIndexer:
             else "album"
         )
         source_name, source_relative_path = self._unsorted_source(relative)
+        captured_at = self._captured_at(path) if media_type == "photo" else None
         values = (
             media_type, library_root, path.name, parent, mime_type, container_id,
             stat.st_size, stat.st_mtime_ns, collection_state, source_name,
-            source_relative_path, relative,
+            source_relative_path, captured_at, captured_at, relative,
         )
         if row:
             changed = (
@@ -231,11 +237,22 @@ class LibraryIndexer:
                 UPDATE media SET media_type=?, library_root=?, file_name=?,
                     parent_relative_path=?, mime_type=?, container_id=?, size=?,
                     mtime_ns=?, collection_state=?, source_name=?,
-                    source_relative_path=?, index_state='indexed', missing_since=NULL,
+                    source_relative_path=?,
+                    captured_at=CASE
+                      WHEN date_source='manual' THEN captured_at
+                      WHEN ? IS NOT NULL THEN ?
+                      ELSE captured_at
+                    END,
+                    date_source=CASE
+                      WHEN date_source='manual' THEN date_source
+                      WHEN ? IS NOT NULL THEN 'metadata'
+                      ELSE date_source
+                    END,
+                    index_state='indexed', missing_since=NULL,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
                 """,
-                (*values[:-1], row["id"]),
+                (*values[:-1], captured_at, row["id"]),
             )
             return changed
         connection.execute(
@@ -243,13 +260,15 @@ class LibraryIndexer:
             INSERT INTO media(
                 relative_path, size, mtime_ns, media_type, library_root, file_name,
                 parent_relative_path, mime_type, container_id, collection_state,
-                source_name, source_relative_path, imported_at, date_source, index_state
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 'import', 'indexed')
+                source_name, source_relative_path, captured_at, imported_at,
+                date_source, index_state
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, 'indexed')
             """,
             (
                 relative, stat.st_size, stat.st_mtime_ns, media_type, library_root,
                 path.name, parent, mime_type, container_id, collection_state,
-                source_name, source_relative_path,
+                source_name, source_relative_path, captured_at,
+                "metadata" if captured_at else "import",
             ),
         )
         return True
@@ -264,6 +283,22 @@ class LibraryIndexer:
             return None, None
         source_relative_path = "/".join(parts[:-1])
         return parts[0], source_relative_path
+
+    @staticmethod
+    def _captured_at(path: Path) -> str | None:
+        try:
+            with Image.open(path) as image:
+                exif = image.getexif()
+        except OSError:
+            return None
+        for label in ("DateTimeOriginal", "DateTimeDigitized", "DateTime"):
+            raw = exif.get(EXIF_NAME.get(label))
+            if raw:
+                try:
+                    return datetime.strptime(str(raw), "%Y:%m:%d %H:%M:%S").isoformat()
+                except ValueError:
+                    continue
+        return None
 
     def index_album_file(self, container_id: int, path: Path) -> int:
         """Register one already-written photo in its existing album container."""
