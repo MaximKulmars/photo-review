@@ -36,6 +36,17 @@ class UnsortedToAlbumRequest(BaseModel):
     rename_on_conflict: bool = False
 
 
+class UnsortedNewAlbumRequest(BaseModel):
+    media_ids: list[int] = Field(min_length=1, max_length=500)
+    year: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=120)
+    rename_on_conflict: bool = False
+
+
+class ManualCaptureDateRequest(BaseModel):
+    captured_at: str | None = None
+
+
 class MediaIdsRequest(BaseModel):
     media_ids: list[int] = Field(min_length=1, max_length=500)
 
@@ -82,6 +93,19 @@ def _effective_unsorted_date(item: dict[str, object]) -> tuple[str, int, int | N
 
     parsed = datetime.fromisoformat(imported_at)
     return imported_at, parsed.year, parsed.month
+
+
+def _manual_capture_date(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError as exc:
+        raise HTTPException(400, "Недопустимая дата съёмки") from exc
+    now = datetime.now(parsed.tzinfo) if parsed.tzinfo else datetime.now()
+    if parsed.year < 1800 or parsed > now:
+        raise HTTPException(400, "Дата съёмки вне допустимого диапазона")
+    return parsed.replace(microsecond=0).isoformat()
 
 
 def install_library_api(
@@ -326,6 +350,34 @@ def install_library_api(
             status_code=200 if not failures else 409,
         )
 
+    @app.patch("/api/library/unsorted/{media_id}/captured-at", dependencies=dependencies)
+    def update_unsorted_capture_date(media_id: int, payload: ManualCaptureDateRequest):
+        captured_at = _manual_capture_date(payload.captured_at)
+        row = database.one(
+            """
+            SELECT id FROM media
+            WHERE id=? AND collection_state='unsorted' AND status='active'
+            """,
+            (media_id,),
+        )
+        if row is None:
+            raise HTTPException(404, "Фотография не найдена в «Неразобранном»")
+        database.execute(
+            """
+            UPDATE media SET captured_at=?, date_source=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (captured_at, "manual" if captured_at else "import", media_id),
+        )
+        updated = database.one(
+            """
+            SELECT id, relative_path, captured_at, imported_at, date_source
+            FROM media WHERE id=?
+            """,
+            (media_id,),
+        )
+        return {key: updated[key] for key in updated.keys()}
+
     @app.post("/api/library/albums", dependencies=dependencies, status_code=201)
     def create_album(payload: AlbumCreateRequest):
         year = _single_visible_folder_name(payload.year, "название полки")
@@ -407,6 +459,45 @@ def install_library_api(
                 pass
             raise HTTPException(500, "Не удалось зарегистрировать созданный альбом")
         return {key: row[key] for key in row.keys()}
+
+    @app.post("/api/library/unsorted/create-album", dependencies=dependencies, status_code=201)
+    def create_album_from_unsorted(payload: UnsortedNewAlbumRequest):
+        from .storage import Storage
+
+        placeholders = ",".join("?" for _ in payload.media_ids)
+        rows = database.all(
+            f"""
+            SELECT id FROM media
+            WHERE id IN ({placeholders}) AND collection_state='unsorted' AND status='active'
+            """,
+            tuple(payload.media_ids),
+        )
+        found_ids = {int(row["id"]) for row in rows}
+        missing = [
+            {"media_id": media_id, "error": "Фотография не найдена в «Неразобранном»"}
+            for media_id in payload.media_ids
+            if media_id not in found_ids
+        ]
+        if missing:
+            return JSONResponse({"album": None, "completed": [], "failures": missing}, status_code=404)
+
+        album = create_album(AlbumCreateRequest(year=payload.year, name=payload.name))
+        storage = Storage(config.photos_root, config.quarantine_root, database)
+        completed, failures = [], []
+        for media_id in payload.media_ids:
+            try:
+                completed.append({
+                    "media_id": media_id,
+                    "path": storage.move_media(
+                        media_id, str(album["relative_path"]), payload.rename_on_conflict
+                    ),
+                })
+            except (OSError, ValueError) as exc:
+                failures.append({"media_id": media_id, "error": str(exc)})
+        return JSONResponse(
+            {"album": album, "completed": completed, "failures": failures},
+            status_code=201 if not failures else 409,
+        )
 
     @app.get("/api/library/media", dependencies=dependencies)
     def media(

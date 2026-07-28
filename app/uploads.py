@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 _FORMATS_BY_EXTENSION = {
     ".jpg": {"JPEG"}, ".jpeg": {"JPEG"}, ".png": {"PNG"},
-    ".webp": {"WEBP"}, ".heic": {"HEIF"}, ".heif": {"HEIF"},
+    ".webp": {"WEBP"}, ".gif": {"GIF"}, ".bmp": {"BMP"},
+    ".tif": {"TIFF"}, ".tiff": {"TIFF"}, ".heic": {"HEIF"}, ".heif": {"HEIF"},
 }
 _CHUNK_SIZE = 1024 * 1024
 
@@ -175,7 +176,7 @@ def install_upload_api(
             except ValueError as exc:
                 messages = {
                     "INVALID_NAME": ("INVALID_NAME", "Invalid file name."),
-                    "UNSUPPORTED_FORMAT": ("UNSUPPORTED_FORMAT", "Only JPEG, PNG, WebP, HEIC, and HEIF images are supported."),
+                    "UNSUPPORTED_FORMAT": ("UNSUPPORTED_FORMAT", "Only JPEG, PNG, WebP, GIF, BMP, TIFF, HEIC, and HEIF images are supported."),
                     "EMPTY_FILE": ("EMPTY_FILE", "The file is empty."),
                     "FILE_TOO_LARGE": ("FILE_TOO_LARGE", "The file exceeds the size limit."),
                     "TOTAL_TOO_LARGE": ("TOTAL_TOO_LARGE", "The upload exceeds the total size limit."),
@@ -251,7 +252,7 @@ def install_upload_api(
             except ValueError as exc:
                 messages = {
                     "INVALID_NAME": ("INVALID_NAME", "Invalid file name."),
-                    "UNSUPPORTED_FORMAT": ("UNSUPPORTED_FORMAT", "Only JPEG, PNG, WebP, HEIC, and HEIF images are supported."),
+                    "UNSUPPORTED_FORMAT": ("UNSUPPORTED_FORMAT", "Only JPEG, PNG, WebP, GIF, BMP, TIFF, HEIC, and HEIF images are supported."),
                     "EMPTY_FILE": ("EMPTY_FILE", "The file is empty."),
                     "FILE_TOO_LARGE": ("FILE_TOO_LARGE", "The file exceeds the size limit."),
                     "TOTAL_TOO_LARGE": ("TOTAL_TOO_LARGE", "The upload exceeds the total size limit."),

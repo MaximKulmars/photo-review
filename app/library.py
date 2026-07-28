@@ -11,7 +11,9 @@ from PIL import ExifTags, Image
 from .db import Database
 
 
-PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
+PHOTO_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".heic", ".heif"
+}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v"}
 UNSORTED_FOLDER = "Unsorted"
 EXIF_NAME = {value: key for key, value in ExifTags.TAGS.items()}

@@ -22,7 +22,7 @@ from .semantic import semantic_findings
 
 register_heif_opener()
 
-SUPPORTED = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"}
+SUPPORTED = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".heic", ".heif"}
 KNOWN_UNSUPPORTED = {
     ".raw",
     ".cr2",
