@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 
 from PIL import Image
@@ -350,6 +351,54 @@ class LibraryIndexerTests(unittest.TestCase):
                 response.json()["items"],
                 [{"year": "2024", "media_count": 0, "album_count": 0, "cover_media_id": None}],
             )
+
+    def test_api_uploads_unsorted_photos_to_selected_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            photos = root / "photos"
+            quarantine = root / "quarantine"
+            data = root / "data"
+            photos.mkdir()
+            quarantine.mkdir()
+            data.mkdir()
+
+            database = Database(data / "data.sqlite3")
+            database.initialize()
+            indexer = LibraryIndexer(database, {"photos": photos})
+            app = FastAPI()
+            config = Config(
+                photos_root=photos,
+                videos_root=None,
+                quarantine_root=quarantine,
+                data_root=data,
+                password="",
+                session_secret="",
+                auth_enabled=False,
+                port=0,
+                upload_max_files=50,
+                upload_max_file_bytes=1024 * 1024,
+                upload_max_total_bytes=10 * 1024 * 1024,
+            )
+            install_library_api(app, database, indexer, lambda: True, config)
+            payload = BytesIO()
+            Image.new("RGB", (8, 8), "white").save(payload, "JPEG")
+
+            response = TestClient(app).post(
+                "/api/library/unsorted/photos",
+                data={"source_name": "Bella Phone"},
+                files=[("files", ("phone.jpg", payload.getvalue(), "image/jpeg"))],
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["successful_count"], 1)
+            self.assertTrue((photos / "Unsorted" / "Bella Phone" / "phone.jpg").is_file())
+            row = database.one(
+                "SELECT source_name, source_relative_path, collection_state FROM media WHERE relative_path=?",
+                ("Unsorted/Bella Phone/phone.jpg",),
+            )
+            self.assertEqual(row["source_name"], "Bella Phone")
+            self.assertEqual(row["source_relative_path"], "Bella Phone")
+            self.assertEqual(row["collection_state"], "unsorted")
 
 
 if __name__ == "__main__":

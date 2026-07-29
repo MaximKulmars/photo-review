@@ -752,12 +752,34 @@ function setupUnsortedControls() {
   if (!$("#unsortedDateDialog")) {
     document.body.insertAdjacentHTML("beforeend", `<dialog id="unsortedDateDialog"><form id="unsortedDateForm"><div class="dialog-heading"><div><h2>Дата съёмки</h2><p class="muted" id="unsortedDatePath"></p></div><button type="button" class="icon-button" data-close aria-label="Закрыть">×</button></div><label>Дата съёмки<input id="unsortedDateInput" type="text" inputmode="numeric" autocomplete="off" placeholder="2020, 2020-05 или 2020-05-14"></label><p class="muted">Можно указать только год, год и месяц, дату или дату со временем.</p><p class="notice danger hidden" id="unsortedDateError" role="alert"></p><div class="dialog-actions"><button type="button" class="button" id="unsortedDateClear">Сбросить дату</button><button type="button" class="button" data-close>Отмена</button><button class="button primary" id="unsortedDateSubmit" type="submit">Сохранить</button></div></form></dialog>`);
   }
+  if (!$("#unsortedUploadDialog")) {
+    document.body.insertAdjacentHTML("beforeend", `<dialog id="unsortedUploadDialog"><form id="unsortedUploadForm"><div class="dialog-heading"><div><h2>Добавить фотографии</h2><p class="muted">Выберите источник для новых неразобранных фотографий.</p></div><button type="button" class="icon-button" data-close aria-label="Закрыть">×</button></div><label>Источник<select id="unsortedUploadSource"></select></label><label class="radio"><input type="checkbox" id="unsortedUploadNewSourceToggle"> Новый источник</label><label id="unsortedUploadNewSourceLabel" class="hidden">Название источника<input id="unsortedUploadNewSource" maxlength="120" autocomplete="off" placeholder="Например, Bella Phone"></label><label>Фотографии<input id="unsortedUploadDialogFiles" type="file" multiple required accept=".jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.heic,.heif,image/jpeg,image/png,image/webp,image/gif,image/bmp,image/tiff,image/heic,image/heif"></label><p class="notice danger hidden" id="unsortedUploadDialogError" role="alert"></p><div class="dialog-actions"><button type="button" class="button" data-close>Отмена</button><button class="button primary" id="unsortedUploadDialogSubmit" type="submit">Добавить</button></div></form></dialog>`);
+  }
   $$("[data-close]").forEach(button => button.onclick = () => button.closest("dialog").close());
 }
-function uploadUnsortedPhotos(files) {
+function setUnsortedUploadDialogError(message = "") {
+  $("#unsortedUploadDialogError").textContent = message;
+  $("#unsortedUploadDialogError").classList.toggle("hidden", !message);
+}
+async function openUnsortedUploadDialog() {
+  const data = await api("/api/library/unsorted/sources");
+  const sources = (data.items || []).map(item => item.source_name).filter(Boolean);
+  const options = sources.length ? sources : ["Manual Import"];
+  $("#unsortedUploadSource").innerHTML = options.map(source => `<option value="${escapeHtml(source)}">${escapeHtml(source)}</option>`).join("");
+  $("#unsortedUploadNewSourceToggle").checked = false;
+  $("#unsortedUploadNewSourceLabel").classList.add("hidden");
+  $("#unsortedUploadNewSource").value = "";
+  $("#unsortedUploadDialogFiles").value = "";
+  $("#unsortedUploadDialogSubmit").disabled = false;
+  setUnsortedUploadDialogError();
+  $("#unsortedUploadDialog").showModal();
+  requestAnimationFrame(() => $("#unsortedUploadDialogFiles").focus());
+}
+function uploadUnsortedPhotos(files, sourceName = "") {
   const selected = [...files];
   if (!selected.length) return;
   const form = new FormData();
+  if (sourceName) form.append("source_name", sourceName);
   selected.forEach(file => form.append("files", file, file.name));
   $("#unsortedUploadStatus").classList.remove("hidden");
   $("#unsortedUploadTitle").textContent = `Добавляем ${selected.length} ${photoWord(selected.length)}`;
@@ -784,6 +806,20 @@ function uploadUnsortedPhotos(files) {
 setupUnsortedControls();
 document.querySelector('[data-library-view="photo-unsorted"]').onclick = () => loadUnsorted(1).catch(error => toast(error.message));
 document.querySelector('[data-library-view="photo-home"]').onclick = () => home(true);
+$("#unsortedUploadNewSourceToggle").onchange = () => {
+  $("#unsortedUploadNewSourceLabel").classList.toggle("hidden", !$("#unsortedUploadNewSourceToggle").checked);
+  if ($("#unsortedUploadNewSourceToggle").checked) requestAnimationFrame(() => $("#unsortedUploadNewSource").focus());
+};
+$("#unsortedUploadForm").onsubmit = event => {
+  event.preventDefault();
+  const sourceName = $("#unsortedUploadNewSourceToggle").checked ? $("#unsortedUploadNewSource").value.trim() : $("#unsortedUploadSource").value;
+  if (!sourceName) return setUnsortedUploadDialogError("Введите название источника.");
+  const files = $("#unsortedUploadDialogFiles").files;
+  if (!files.length) return setUnsortedUploadDialogError("Выберите фотографии.");
+  $("#unsortedUploadDialogSubmit").disabled = true;
+  $("#unsortedUploadDialog").close();
+  uploadUnsortedPhotos(files, sourceName);
+};
 $("#unsortedCreateAlbum").onclick = () => openUnsortedCreateAlbumDialog().catch(error => toast(error.message));
 $("#unsortedCreateAlbumForm").onsubmit = submitUnsortedCreateAlbum;
 $("#unsortedDateForm").onsubmit = event => {
@@ -824,7 +860,7 @@ $("#unsortedRefresh").onclick = async () => {
     button.disabled = false;
   }
 };
-$("#addUnsortedPhotos").onclick = () => $("#unsortedPhotoInput").click();
+$("#addUnsortedPhotos").onclick = () => openUnsortedUploadDialog().catch(error => toast(error.message));
 $("#unsortedPhotoInput").onchange = () => { uploadUnsortedPhotos($("#unsortedPhotoInput").files); $("#unsortedPhotoInput").value = ""; };
 $("#unsortedSelectAll").onclick = () => {
   unsorted.items.forEach(item => unsorted.selected.add(item.id));

@@ -6,7 +6,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from PIL import Image, UnidentifiedImageError
 
 from .config import Config
@@ -36,6 +36,15 @@ def _safe_name(name: str | None) -> str:
     if Path(name).suffix.lower() not in PHOTO_EXTENSIONS:
         raise ValueError("UNSUPPORTED_FORMAT")
     return name
+
+
+def _safe_source_name(name: str | None) -> str:
+    value = (name or "Manual Import").strip() or "Manual Import"
+    if Path(value).name != value or "/" in value or "\\" in value:
+        raise ValueError("INVALID_SOURCE")
+    if any(ord(char) < 32 for char in value) or value in {".", ".."} or value.startswith("."):
+        raise ValueError("INVALID_SOURCE")
+    return value
 
 
 def _album_directory(database: Database, config: Config, container_id: int) -> tuple[str, Path]:
@@ -203,7 +212,9 @@ def install_upload_api(
 
     @app.post("/api/library/unsorted/photos", dependencies=dependencies)
     async def upload_unsorted_photos(
-        request: Request, files: list[UploadFile] = File(...)
+        request: Request,
+        files: list[UploadFile] = File(...),
+        source_name: str | None = Form(None),
     ):
         if not files:
             raise HTTPException(400, "No photos were selected")
@@ -213,7 +224,11 @@ def install_upload_api(
         if content_length and int(content_length) > config.upload_max_total_bytes + 64 * 1024:
             raise HTTPException(413, "The total upload is too large")
 
-        folder = (config.photos_root / "Unsorted" / "Manual Import").resolve()
+        try:
+            source_folder = _safe_source_name(source_name)
+        except ValueError as exc:
+            raise HTTPException(400, "Invalid source name") from exc
+        folder = safe_path(config.photos_root, f"Unsorted/{source_folder}")
         try:
             folder.relative_to(config.photos_root.resolve())
         except ValueError as exc:
