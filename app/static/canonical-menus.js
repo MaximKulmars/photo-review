@@ -2,7 +2,7 @@
   const registry = {
     shelf: [
       { id: "shelf.createAlbum", label: "Создать альбом", icon: "+", group: "main", status: "ready" },
-      { id: "shelf.importPhotos", label: "Импортировать фотографии", icon: "⇪", group: "main", status: "planned", note: "Будет выбор альбома, нового альбома или «Неразобранного»." },
+      { id: "shelf.importPhotos", label: "Импортировать фотографии", icon: "⇪", group: "main", status: "ready" },
       { id: "shelf.openUnsorted", label: "Просмотреть «Неразобранное»", icon: "□", group: "main", status: "ready" },
       { id: "shelf.startKiosk", label: "Запустить фотокиоск", icon: "▶", group: "kiosk", status: "planned" },
     ],
@@ -58,6 +58,84 @@
     });
   }
   function closeMenu() { activeMenu?.remove(); activeMenu = null; }
+  function setShelfImportError(message = "") {
+    const error = document.querySelector("#shelfImportError");
+    if (!error) return;
+    error.textContent = message;
+    error.classList.toggle("hidden", !message);
+  }
+  function ensureShelfImportDialog() {
+    let dialog = document.querySelector("#shelfImportDialog");
+    if (dialog) return dialog;
+    document.body.insertAdjacentHTML("beforeend", `<dialog id="shelfImportDialog"><form id="shelfImportForm"><div class="dialog-heading"><div><h2>Импортировать фотографии</h2><p class="muted" id="shelfImportShelf"></p></div><button type="button" class="icon-button" id="shelfImportClose" aria-label="Закрыть">×</button></div><fieldset><legend>Куда добавить</legend><label class="radio"><input type="radio" name="destination" value="existing" checked> В существующий альбом</label><label>Альбом<select id="shelfImportAlbum"></select></label><label class="radio"><input type="radio" name="destination" value="new"> В новый альбом</label><label>Название нового альбома<input id="shelfImportAlbumName" maxlength="120" autocomplete="off" placeholder="Например, Поездка в Гюмри"></label><label class="radio"><input type="radio" name="destination" value="unsorted"> В «Неразобранное»</label></fieldset><label>Фотографии<input id="shelfImportFiles" type="file" multiple required accept=".jpg,.jpeg,.png,.webp,.gif,.bmp,.tif,.tiff,.heic,.heif,image/jpeg,image/png,image/webp,image/gif,image/bmp,image/tiff,image/heic,image/heif"></label><p class="notice danger hidden" id="shelfImportError" role="alert"></p><div class="dialog-actions"><button type="button" class="button" id="shelfImportCancel">Отмена</button><button class="button primary" id="shelfImportSubmit" type="submit">Импортировать</button></div></form></dialog>`);
+    dialog = document.querySelector("#shelfImportDialog");
+    const close = () => dialog.close();
+    document.querySelector("#shelfImportClose").onclick = close;
+    document.querySelector("#shelfImportCancel").onclick = close;
+    dialog.addEventListener("close", () => {
+      document.querySelector("#shelfImportForm").reset();
+      setShelfImportError();
+      document.querySelector("#shelfImportSubmit").disabled = false;
+    });
+    document.querySelector("#shelfImportForm").onsubmit = submitShelfImport;
+    return dialog;
+  }
+  async function openShelfImportDialog(shelfName) {
+    if (!shelfName) return toast("Сначала откройте полку");
+    const dialog = ensureShelfImportDialog();
+    const albums = await api(`/api/library/albums?year=${encodeURIComponent(shelfName)}`);
+    const items = albums.items || [];
+    document.querySelector("#shelfImportShelf").textContent = `Полка «${shelfName}»`;
+    document.querySelector("#shelfImportAlbum").innerHTML = items.length
+      ? items.map(item => `<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")
+      : '<option value="">На полке пока нет альбомов</option>';
+    const existing = document.querySelector('#shelfImportForm input[value="existing"]');
+    existing.disabled = !items.length;
+    document.querySelector("#shelfImportAlbum").disabled = !items.length;
+    document.querySelector('#shelfImportForm input[value="new"]').checked = !items.length;
+    setShelfImportError();
+    dialog.showModal();
+    requestAnimationFrame(() => document.querySelector("#shelfImportFiles").focus());
+  }
+  async function submitShelfImport(event) {
+    event.preventDefault();
+    const shelfName = libraryShelf;
+    const files = [...document.querySelector("#shelfImportFiles").files];
+    const destination = new FormData(event.target).get("destination");
+    if (!files.length) return setShelfImportError("Выберите фотографии.");
+    document.querySelector("#shelfImportSubmit").disabled = true;
+    setShelfImportError();
+    try {
+      if (destination === "unsorted") {
+        document.querySelector("#shelfImportDialog").close();
+        return uploadUnsortedPhotos(files);
+      }
+      let albumId = Number(document.querySelector("#shelfImportAlbum").value);
+      if (destination === "new") {
+        const name = document.querySelector("#shelfImportAlbumName").value.trim();
+        if (!name) {
+          document.querySelector("#shelfImportSubmit").disabled = false;
+          return setShelfImportError("Введите название нового альбома.");
+        }
+        const created = await api("/api/library/albums", {
+          method: "POST",
+          body: JSON.stringify({ year: shelfName, name }),
+        });
+        albumId = Number(created.id);
+      }
+      if (!albumId) {
+        document.querySelector("#shelfImportSubmit").disabled = false;
+        return setShelfImportError("Выберите альбом или создайте новый.");
+      }
+      document.querySelector("#shelfImportDialog").close();
+      await album(albumId, true);
+      albumUpload.albumId = albumId;
+      startAlbumUpload(files);
+    } catch (error) {
+      setShelfImportError(error.message || "Не удалось импортировать фотографии.");
+      document.querySelector("#shelfImportSubmit").disabled = false;
+    }
+  }
   function renderMenu(entity, context, anchor) {
     closeMenu();
     const menu = document.createElement("div");
@@ -98,6 +176,7 @@
     running.add(action.id);
     try {
       if (action.id === "shelf.createAlbum") return document.querySelector("#createAlbumButton")?.click();
+      if (action.id === "shelf.importPhotos") return openShelfImportDialog(context.shelf);
       if (action.id === "shelf.openUnsorted") return loadUnsorted(1);
       if (action.id === "album.addPhotos") return openAlbumUpload(context.albumId);
       if (action.id === "album.rename") return renameAlbum(context.albumId, context.name);

@@ -35,7 +35,7 @@ class Action:
 
 REGISTRY: tuple[Action, ...] = (
     Action("shelf.createAlbum", "Создать альбом", "＋", "shelf", "main", 10),
-    Action("shelf.importPhotos", "Импортировать фотографии", "⇪", "shelf", "main", 20, "planned"),
+    Action("shelf.importPhotos", "Импортировать фотографии", "⇪", "shelf", "main", 20),
     Action("shelf.openUnsorted", "Просмотреть «Неразобранное»", "□", "shelf", "main", 30),
     Action("shelf.startKiosk", "Запустить фотокиоск", "▶", "shelf", "kiosk", 40, "planned"),
     Action("album.addPhotos", "Добавить фотографии", "⇪", "album", "main", 10),
