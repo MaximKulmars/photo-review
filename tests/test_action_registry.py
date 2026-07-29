@@ -45,7 +45,8 @@ def test_photo_and_quarantine_menus_are_state_specific():
 
 
 def test_shelf_import_is_not_a_direct_shelf_upload_action():
-    shelf_ids = ids("shelf")
+    shelf_actions = actions_for("shelf")
+    shelf_ids = [action["id"] for action in shelf_actions]
     assert shelf_ids == [
         "shelf.createAlbum",
         "shelf.importPhotos",
@@ -53,3 +54,5 @@ def test_shelf_import_is_not_a_direct_shelf_upload_action():
         "shelf.startKiosk",
     ]
     assert "shelf.addPhotos" not in shelf_ids
+    open_unsorted = next(action for action in shelf_actions if action["id"] == "shelf.openUnsorted")
+    assert open_unsorted["status"] == "ready"

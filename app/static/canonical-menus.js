@@ -3,7 +3,7 @@
     shelf: [
       { id: "shelf.createAlbum", label: "Создать альбом", icon: "+", group: "main", status: "ready" },
       { id: "shelf.importPhotos", label: "Импортировать фотографии", icon: "⇪", group: "main", status: "planned", note: "Будет выбор альбома, нового альбома или «Неразобранного»." },
-      { id: "shelf.openUnsorted", label: "Просмотреть «Неразобранное»", icon: "□", group: "main", status: "planned" },
+      { id: "shelf.openUnsorted", label: "Просмотреть «Неразобранное»", icon: "□", group: "main", status: "ready" },
       { id: "shelf.startKiosk", label: "Запустить фотокиоск", icon: "▶", group: "kiosk", status: "planned" },
     ],
     album: [
@@ -98,6 +98,7 @@
     running.add(action.id);
     try {
       if (action.id === "shelf.createAlbum") return document.querySelector("#createAlbumButton")?.click();
+      if (action.id === "shelf.openUnsorted") return loadUnsorted(1);
       if (action.id === "album.addPhotos") return openAlbumUpload(context.albumId);
       if (action.id === "album.rename") return renameAlbum(context.albumId, context.name);
       if (action.id === "photo.showInfo") return showPhotoInformation(context.photo);
