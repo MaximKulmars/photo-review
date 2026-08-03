@@ -56,7 +56,7 @@ def test_migration_creates_operation_tables_and_indexes(tmp_path):
 
     assert {"operations", "operation_items", "media", "containers"} <= tables
     assert {"operations_status_idx", "operations_parent_idx", "operation_items_operation_idx", "operation_items_object_idx"} <= indexes
-    assert database.schema_version() == 7
+    assert database.schema_version() == 8
 
 
 def test_existing_database_migrates_without_losing_legacy_tables(tmp_path):
@@ -148,3 +148,21 @@ def test_create_rolls_back_when_an_item_fails(repository):
         repository.create(draft, [duplicate, duplicate])
 
     assert repository.get(draft.id) is None
+
+
+def test_item_transition_rolls_back_if_aggregate_refresh_fails(repository, monkeypatch):
+    operation = _running_operation(repository)
+    item = repository.items_for(operation.id)[0]
+    repository.transition_item(item.id, OperationItemStatus.QUEUED)
+    repository.transition_item(item.id, OperationItemStatus.RUNNING)
+    before = repository.get(operation.id)
+
+    def fail_refresh(*_):
+        raise RuntimeError("simulated aggregate failure")
+
+    monkeypatch.setattr(repository, "_refresh_counts", fail_refresh)
+    with pytest.raises(RuntimeError, match="aggregate failure"):
+        repository.transition_item(item.id, OperationItemStatus.SUCCEEDED)
+
+    assert repository.items_for(operation.id)[0].status == OperationItemStatus.RUNNING
+    assert repository.get(operation.id).processed_items == before.processed_items

@@ -42,13 +42,17 @@ class InvalidOperationItemTransition(ValueError):
     """Raised when an item status transition is not part of its lifecycle."""
 
 
+class IdempotencyConflictError(RuntimeError):
+    """Raised when one idempotency key is reused for a different command."""
+
+
 OPERATION_TRANSITIONS: dict[OperationStatus, frozenset[OperationStatus]] = {
     OperationStatus.CREATED: frozenset({OperationStatus.QUEUED, OperationStatus.FAILED, OperationStatus.CANCELLED}),
     OperationStatus.QUEUED: frozenset({OperationStatus.RUNNING, OperationStatus.FAILED, OperationStatus.CANCELLING, OperationStatus.CANCELLED, OperationStatus.INTERRUPTED}),
     OperationStatus.RUNNING: frozenset({OperationStatus.COMPLETED, OperationStatus.COMPLETED_WITH_ERRORS, OperationStatus.FAILED, OperationStatus.PAUSING, OperationStatus.CANCELLING, OperationStatus.INTERRUPTED, OperationStatus.REQUIRES_ATTENTION}),
     OperationStatus.PAUSING: frozenset({OperationStatus.PAUSED, OperationStatus.CANCELLING, OperationStatus.INTERRUPTED, OperationStatus.REQUIRES_ATTENTION}),
     OperationStatus.PAUSED: frozenset({OperationStatus.QUEUED, OperationStatus.CANCELLING, OperationStatus.CANCELLED, OperationStatus.REQUIRES_ATTENTION}),
-    OperationStatus.CANCELLING: frozenset({OperationStatus.CANCELLED, OperationStatus.COMPLETED_WITH_ERRORS, OperationStatus.REQUIRES_ATTENTION}),
+    OperationStatus.CANCELLING: frozenset({OperationStatus.CANCELLED, OperationStatus.COMPLETED_WITH_ERRORS, OperationStatus.FAILED, OperationStatus.REQUIRES_ATTENTION}),
     OperationStatus.INTERRUPTED: frozenset({OperationStatus.QUEUED, OperationStatus.CANCELLING, OperationStatus.CANCELLED, OperationStatus.REQUIRES_ATTENTION}),
     OperationStatus.REQUIRES_ATTENTION: frozenset({OperationStatus.QUEUED, OperationStatus.CANCELLING, OperationStatus.CANCELLED}),
     OperationStatus.COMPLETED: frozenset(),
@@ -87,7 +91,7 @@ def completion_status(item_statuses: list[OperationItemStatus]) -> OperationStat
     if not item_statuses or any(status not in TERMINAL_ITEM_STATUSES for status in item_statuses):
         return None
     if any(status == OperationItemStatus.FAILED for status in item_statuses):
-        return OperationStatus.COMPLETED_WITH_ERRORS
+        return OperationStatus.COMPLETED_WITH_ERRORS if any(status in {OperationItemStatus.SUCCEEDED, OperationItemStatus.SKIPPED} for status in item_statuses) else OperationStatus.FAILED
     if any(status in {OperationItemStatus.CANCELLED, OperationItemStatus.OBSOLETE} for status in item_statuses):
         return None
     return OperationStatus.COMPLETED

@@ -303,6 +303,21 @@ MIGRATIONS = (
             "DROP TABLE operations",
         ),
     ),
+    Migration(
+        8,
+        "operation_idempotency",
+        (
+            """
+            CREATE TABLE operation_commands (
+                idempotency_key TEXT PRIMARY KEY,
+                operation_id TEXT NOT NULL UNIQUE REFERENCES operations(id) ON DELETE RESTRICT,
+                fingerprint TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        ),
+        ("DROP TABLE operation_commands",),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -374,8 +389,17 @@ def detect_schema_version(connection: sqlite3.Connection) -> int:
             item_columns = _columns(connection, "operation_items")
             if not {"id", "status", "version", "parent_operation_id"} <= operation_columns or not {"id", "operation_id", "item_type", "item_id", "status"} <= item_columns:
                 raise MigrationError("Структура модели операций неполная")
+        has_idempotency = "operation_commands" in tables
+        if has_idempotency and not has_operation_model:
+            raise MigrationError("Ключи идемпотентности существуют без модели операций")
+        if has_idempotency:
+            command_columns = _columns(connection, "operation_commands")
+            if not {"idempotency_key", "operation_id", "fingerprint"} <= command_columns:
+                raise MigrationError("Структура ключей идемпотентности неполная")
         inferred = (
-            7
+            8
+            if has_idempotency
+            else 7
             if has_operation_model
             else 6
             if has_unsorted_section

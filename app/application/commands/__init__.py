@@ -1,1 +1,5 @@
-"""Intent-revealing commands will be introduced by later migration tasks."""
+"""Intent-revealing application commands."""
+
+from .operations import CreateOperationCommand
+
+__all__ = ["CreateOperationCommand"]
