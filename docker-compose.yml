@@ -22,6 +22,26 @@ services:
         limits:
           memory: 3G
           cpus: "2.0"
+  photo-review-worker:
+    build: .
+    image: photo-review:local
+    container_name: photo-review-worker
+    restart: unless-stopped
+    command: ["huey_consumer", "app.infrastructure.background.tasks.huey", "-k", "thread", "-w", "1"]
+    environment:
+      PHOTO_REVIEW_PASSWORD: "change-me"
+      PHOTO_REVIEW_SESSION_SECRET: "replace-with-a-long-random-string"
+      PHOTO_REVIEW_OCR_LANGS: "rus+eng"
+      TZ: "Asia/Yerevan"
+    volumes:
+      - /srv/storage/02_IMG/Photos:/photos
+      - /srv/storage/02_IMG/Photo_Quarantine:/quarantine
+      - ./photo-review-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          cpus: "2.0"
 
 x-casaos:
   architectures:
@@ -34,4 +54,3 @@ x-casaos:
   description:
     custom: Локальная проверка и очистка фотоархива
   category: Media
-

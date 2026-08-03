@@ -5,3 +5,5 @@ from typing import Protocol
 
 class BackgroundTaskQueue(Protocol):
     """Schedules background work without coupling to a queue implementation."""
+
+    def enqueue_operation(self, operation_id: str) -> str: ...

@@ -18,6 +18,8 @@ class Config:
     upload_max_files: int
     upload_max_file_bytes: int
     upload_max_total_bytes: int
+    huey_db_path: Path | None = None
+    huey_immediate: bool = False
 
     @property
     def library_roots(self) -> dict[str, Path]:
@@ -58,4 +60,6 @@ def load_config() -> Config:
         upload_max_files=int(os.getenv("PHOTO_REVIEW_UPLOAD_MAX_FILES", "50")),
         upload_max_file_bytes=int(os.getenv("PHOTO_REVIEW_UPLOAD_MAX_FILE_BYTES", str(100 * 1024 * 1024))),
         upload_max_total_bytes=int(os.getenv("PHOTO_REVIEW_UPLOAD_MAX_TOTAL_BYTES", str(1024 * 1024 * 1024))),
+        huey_db_path=Path(os.getenv("PHOTO_REVIEW_HUEY_DB", data_root / "queue" / "huey.sqlite3")).resolve(),
+        huey_immediate=os.getenv("PHOTO_REVIEW_HUEY_IMMEDIATE", "false").lower() in {"1", "true", "yes", "on"},
     )

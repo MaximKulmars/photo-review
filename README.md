@@ -54,3 +54,17 @@ PHOTO_REVIEW_DATA=/путь/к/данным \
 PHOTO_REVIEW_PASSWORD=пароль \
 .venv/bin/uvicorn app.main:app --reload
 ```
+
+## Huey worker
+
+The web process does not start the Huey consumer. Run it separately after the
+application environment is configured:
+
+```text
+huey_consumer app.infrastructure.background.tasks.huey -k thread -w 1
+```
+
+Huey stores technical tasks in `PHOTO_REVIEW_HUEY_DB`, which defaults to
+`$PHOTO_REVIEW_DATA/queue/huey.sqlite3`; it remains separate from the main
+PhotoHome database. Docker Compose starts the same worker as
+`photo-review-worker`.
