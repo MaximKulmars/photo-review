@@ -318,6 +318,28 @@ MIGRATIONS = (
         ),
         ("DROP TABLE operation_commands",),
     ),
+    Migration(
+        9,
+        "file_operation_execution_journal",
+        (
+            """
+            CREATE TABLE file_execution_commands (
+                command_id TEXT PRIMARY KEY,
+                operation_id TEXT NOT NULL,
+                operation_item_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                fingerprint TEXT NOT NULL,
+                status TEXT NOT NULL,
+                result_json TEXT,
+                error_code TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX file_execution_commands_operation_idx ON file_execution_commands(operation_id)",
+        ),
+        ("DROP TABLE file_execution_commands",),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -396,8 +418,17 @@ def detect_schema_version(connection: sqlite3.Connection) -> int:
             command_columns = _columns(connection, "operation_commands")
             if not {"idempotency_key", "operation_id", "fingerprint"} <= command_columns:
                 raise MigrationError("Структура ключей идемпотентности неполная")
+        has_file_executor = "file_execution_commands" in tables
+        if has_file_executor and not has_idempotency:
+            raise MigrationError("Журнал файловых операций существует без модели операций")
+        if has_file_executor:
+            execution_columns = _columns(connection, "file_execution_commands")
+            if not {"command_id", "operation_id", "operation_item_id", "fingerprint", "status"} <= execution_columns:
+                raise MigrationError("Журнал файловых операций неполный")
         inferred = (
-            8
+            9
+            if has_file_executor
+            else 8
             if has_idempotency
             else 7
             if has_operation_model
