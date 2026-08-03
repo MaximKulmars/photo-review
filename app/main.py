@@ -25,6 +25,8 @@ from .infrastructure.diagnostics import DiagnosticService
 from .infrastructure.database.operations import SqliteOperationRepository
 from .infrastructure.database.locks import SqliteResourceLockRepository
 from .application.services.operation_manager import OperationManager
+from .application.services.operation_recovery import OperationRecoveryService
+from .infrastructure.background.huey_queue import HueyBackgroundQueue
 from .web.operations_api import install_operations_api
 from .security import password_matches, safe_path
 
@@ -37,6 +39,7 @@ jobs = dependencies.jobs
 library_indexer = dependencies.library_indexer
 operation_manager = OperationManager(SqliteOperationRepository(database), SqliteResourceLockRepository(database))
 diagnostics = DiagnosticService(database)
+operation_recovery = OperationRecoveryService(operation_manager, database, HueyBackgroundQueue(), diagnostics, temp_roots=(config.photos_root, config.quarantine_root))
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 
@@ -49,6 +52,7 @@ async def lifespan(_: FastAPI):
         path.mkdir(parents=True, exist_ok=True)
     database.initialize()
     configure_json_logging(config.data_root / "logs")
+    operation_recovery.recover()
     jobs.start_worker()
     try:
         yield

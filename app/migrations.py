@@ -422,6 +422,24 @@ MIGRATIONS = (
         ),
         ("DROP TABLE resource_locks",),
     ),
+    Migration(
+        13,
+        "operation_recovery_decisions",
+        (
+            """
+            CREATE TABLE operation_recovery_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                operation_id TEXT NOT NULL,
+                operation_item_id TEXT,
+                decision TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX operation_recovery_decisions_operation_idx ON operation_recovery_decisions(operation_id, id)",
+        ),
+        ("DROP TABLE operation_recovery_decisions",),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -528,8 +546,17 @@ def detect_schema_version(connection: sqlite3.Connection) -> int:
             lock_columns = _columns(connection, "resource_locks")
             if not {"resource_type", "resource_id", "lock_mode", "owner_operation_id", "token", "heartbeat_at", "expires_at"} <= lock_columns:
                 raise MigrationError("Таблица блокировок ресурсов неполная")
+        has_recovery = "operation_recovery_decisions" in tables
+        if has_recovery and not has_locks:
+            raise MigrationError("Журнал recovery существует без блокировок ресурсов")
+        if has_recovery:
+            recovery_columns = _columns(connection, "operation_recovery_decisions")
+            if not {"id", "operation_id", "decision", "evidence_json"} <= recovery_columns:
+                raise MigrationError("Журнал recovery неполный")
         inferred = (
-            12
+            13
+            if has_recovery
+            else 12
             if has_locks
             else 11
             if has_diagnostics
