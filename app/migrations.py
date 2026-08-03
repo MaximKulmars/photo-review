@@ -230,7 +230,80 @@ MIGRATIONS = (
             "ALTER TABLE media DROP COLUMN source_name",
             "ALTER TABLE media DROP COLUMN collection_state",
         ),
-    ),)
+    ),
+    Migration(
+        7,
+        "operation_model",
+        (
+            """
+            CREATE TABLE operations (
+                id TEXT PRIMARY KEY,
+                operation_type TEXT NOT NULL,
+                scope_type TEXT,
+                scope_id TEXT,
+                initiator_type TEXT,
+                initiator_id TEXT,
+                status TEXT NOT NULL,
+                title TEXT NOT NULL,
+                stage TEXT,
+                total_items INTEGER NOT NULL DEFAULT 0,
+                processed_items INTEGER NOT NULL DEFAULT 0,
+                succeeded_items INTEGER NOT NULL DEFAULT 0,
+                failed_items INTEGER NOT NULL DEFAULT 0,
+                skipped_items INTEGER NOT NULL DEFAULT 0,
+                progress_percent INTEGER NOT NULL DEFAULT 0,
+                can_pause INTEGER NOT NULL DEFAULT 0,
+                can_cancel INTEGER NOT NULL DEFAULT 0,
+                can_resume INTEGER NOT NULL DEFAULT 0,
+                can_retry_failed INTEGER NOT NULL DEFAULT 0,
+                can_continue INTEGER NOT NULL DEFAULT 0,
+                requires_confirmation INTEGER NOT NULL DEFAULT 0,
+                parameters_json TEXT NOT NULL DEFAULT '{}',
+                result_json TEXT,
+                error_code TEXT,
+                user_message TEXT,
+                parent_operation_id TEXT REFERENCES operations(id) ON DELETE RESTRICT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                queued_at TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                version INTEGER NOT NULL DEFAULT 1
+            )
+            """,
+            "CREATE INDEX operations_status_idx ON operations(status)",
+            "CREATE INDEX operations_type_idx ON operations(operation_type)",
+            "CREATE INDEX operations_created_idx ON operations(created_at)",
+            "CREATE INDEX operations_parent_idx ON operations(parent_operation_id)",
+            """
+            CREATE TABLE operation_items (
+                id TEXT PRIMARY KEY,
+                operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE RESTRICT,
+                item_type TEXT NOT NULL,
+                item_id TEXT NOT NULL,
+                source_version TEXT,
+                status TEXT NOT NULL,
+                stage TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                error_code TEXT,
+                user_message TEXT,
+                result_json TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                finished_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(operation_id, item_type, item_id)
+            )
+            """,
+            "CREATE INDEX operation_items_operation_idx ON operation_items(operation_id)",
+            "CREATE INDEX operation_items_object_idx ON operation_items(item_type, item_id)",
+        ),
+        (
+            "DROP TABLE operation_items",
+            "DROP TABLE operations",
+        ),
+    ),
+)
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 APPLICATION_TABLES = {"settings", "media", "findings", "jobs", "audit_log"}
@@ -291,8 +364,20 @@ def detect_schema_version(connection: sqlite3.Connection) -> int:
             raise MigrationError("Структура таблиц не соответствует известной миграции")
         if has_manual_quality and not has_scan_job:
             raise MigrationError("Структура таблицы media непоследовательна")
+        operation_tables = {"operations", "operation_items"}
+        operation_count = len(operation_tables & tables)
+        if operation_count and operation_count != len(operation_tables):
+            raise MigrationError("Модель операций применена частично")
+        has_operation_model = operation_count == len(operation_tables)
+        if has_operation_model:
+            operation_columns = _columns(connection, "operations")
+            item_columns = _columns(connection, "operation_items")
+            if not {"id", "status", "version", "parent_operation_id"} <= operation_columns or not {"id", "operation_id", "item_type", "item_id", "status"} <= item_columns:
+                raise MigrationError("Структура модели операций неполная")
         inferred = (
-            6
+            7
+            if has_operation_model
+            else 6
             if has_unsorted_section
             else 5
             if has_library_index
