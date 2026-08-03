@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import mimetypes
+import uuid
 from io import BytesIO
 
 from PIL import Image, ImageOps
@@ -19,6 +20,7 @@ from .analyzer import CATEGORIES, JobManager
 from .bootstrap import build_application_dependencies
 from .config import Config, load_config
 from .library_api import install_library_api
+from .infrastructure.diagnostics import bind_diagnostic_context, configure_json_logging, shutdown_json_logging
 from .security import password_matches, safe_path
 
 BASE_DIR = Path(__file__).parent
@@ -39,13 +41,28 @@ async def lifespan(_: FastAPI):
     for path in roots:
         path.mkdir(parents=True, exist_ok=True)
     database.initialize()
+    configure_json_logging(config.data_root / "logs")
     jobs.start_worker()
-    yield
+    try:
+        yield
+    finally:
+        shutdown_json_logging()
 
 
 app = FastAPI(title="Разбор фотографий", lifespan=lifespan)
 app.add_middleware(SessionMiddleware, secret_key=config.session_secret, same_site="strict", https_only=False, max_age=60 * 60 * 24 * 30)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+
+
+@app.middleware("http")
+async def diagnostic_request_context(request: Request, call_next):
+    correlation_id = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    with bind_diagnostic_context(correlation_id=correlation_id, request_id=request_id, component="web"):
+        response = await call_next(request)
+    response.headers["X-Correlation-ID"] = correlation_id
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 def require_login(request: Request) -> None:

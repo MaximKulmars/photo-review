@@ -369,6 +369,36 @@ MIGRATIONS = (
         ),
         ("DROP TABLE outbox_events",),
     ),
+    Migration(
+        11,
+        "diagnostic_events",
+        (
+            """
+            CREATE TABLE diagnostic_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_code TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                component TEXT NOT NULL,
+                title TEXT NOT NULL,
+                user_message TEXT NOT NULL,
+                suggested_action TEXT NOT NULL,
+                technical_reference TEXT,
+                object_type TEXT,
+                object_id TEXT,
+                operation_id TEXT,
+                first_occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_occurred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL,
+                resolved_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            "CREATE INDEX diagnostic_events_operation_idx ON diagnostic_events(operation_id)",
+            "CREATE INDEX diagnostic_events_active_idx ON diagnostic_events(status, severity, last_occurred_at)",
+        ),
+        ("DROP TABLE diagnostic_events",),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -461,8 +491,17 @@ def detect_schema_version(connection: sqlite3.Connection) -> int:
             outbox_columns = _columns(connection, "outbox_events")
             if not {"id", "event_id", "event_type", "aggregate_type", "aggregate_id", "payload", "status", "attempt_count", "available_at"} <= outbox_columns:
                 raise MigrationError("Transactional outbox неполный")
+        has_diagnostics = "diagnostic_events" in tables
+        if has_diagnostics and not has_outbox:
+            raise MigrationError("Диагностика существует без transactional outbox")
+        if has_diagnostics:
+            diagnostic_columns = _columns(connection, "diagnostic_events")
+            if not {"id", "event_code", "severity", "component", "operation_id", "occurrence_count", "status"} <= diagnostic_columns:
+                raise MigrationError("Таблица диагностических событий неполная")
         inferred = (
-            10
+            11
+            if has_diagnostics
+            else 10
             if has_outbox
             else 9
             if has_file_executor
