@@ -340,6 +340,35 @@ MIGRATIONS = (
         ),
         ("DROP TABLE file_execution_commands",),
     ),
+    Migration(
+        10,
+        "transactional_outbox",
+        (
+            """
+            CREATE TABLE outbox_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL UNIQUE,
+                event_type TEXT NOT NULL,
+                aggregate_type TEXT NOT NULL,
+                aggregate_id TEXT NOT NULL,
+                operation_id TEXT,
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                available_at TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                processed_at TEXT,
+                last_error_code TEXT,
+                last_error_message TEXT,
+                locked_at TEXT,
+                locked_by TEXT
+            )
+            """,
+            "CREATE INDEX outbox_events_available_idx ON outbox_events(status, available_at, id)",
+            "CREATE INDEX outbox_events_aggregate_idx ON outbox_events(aggregate_type, aggregate_id, id)",
+        ),
+        ("DROP TABLE outbox_events",),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -425,8 +454,17 @@ def detect_schema_version(connection: sqlite3.Connection) -> int:
             execution_columns = _columns(connection, "file_execution_commands")
             if not {"command_id", "operation_id", "operation_item_id", "fingerprint", "status"} <= execution_columns:
                 raise MigrationError("Журнал файловых операций неполный")
+        has_outbox = "outbox_events" in tables
+        if has_outbox and not has_file_executor:
+            raise MigrationError("Transactional outbox существует без журнала файловых операций")
+        if has_outbox:
+            outbox_columns = _columns(connection, "outbox_events")
+            if not {"id", "event_id", "event_type", "aggregate_type", "aggregate_id", "payload", "status", "attempt_count", "available_at"} <= outbox_columns:
+                raise MigrationError("Transactional outbox неполный")
         inferred = (
-            9
+            10
+            if has_outbox
+            else 9
             if has_file_executor
             else 8
             if has_idempotency

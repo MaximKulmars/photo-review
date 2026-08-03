@@ -9,6 +9,7 @@ from ...config import load_config
 from ...db import Database
 from ...domain.operations import OperationStatus
 from ..database.operations import SqliteOperationRepository
+from ..database.outbox import OutboxProcessor, SqliteOutboxRepository
 from .huey_app import create_huey
 
 
@@ -27,6 +28,16 @@ def operation_manager() -> OperationManager:
     database = Database(config.database_path)
     database.initialize()
     return OperationManager(SqliteOperationRepository(database))
+
+
+@huey.task(retries=RETRY_COUNT, retry_delay=RETRY_DELAY_SECONDS, retry_backoff=2)
+def process_outbox(worker_id: str = "huey", limit: int = 25) -> dict[str, int]:
+    """Deliver a bounded outbox batch; events remain recoverable in PhotoHome DB."""
+    config = load_config()
+    database = Database(config.database_path)
+    database.initialize()
+    processor = OutboxProcessor(SqliteOutboxRepository(database), handlers={})
+    return processor.process_batch(worker_id, limit=limit)
 
 
 @huey.task(retries=RETRY_COUNT, retry_delay=RETRY_DELAY_SECONDS, retry_backoff=2)
