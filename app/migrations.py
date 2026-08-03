@@ -399,6 +399,29 @@ MIGRATIONS = (
         ),
         ("DROP TABLE diagnostic_events",),
     ),
+    Migration(
+        12,
+        "resource_locks",
+        (
+            """
+            CREATE TABLE resource_locks (
+                resource_type TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                lock_mode TEXT NOT NULL,
+                owner_operation_id TEXT NOT NULL,
+                owner_item_id TEXT,
+                token TEXT NOT NULL,
+                acquired_at TEXT NOT NULL,
+                heartbeat_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                PRIMARY KEY(resource_type, resource_id, lock_mode)
+            )
+            """,
+            "CREATE INDEX resource_locks_owner_idx ON resource_locks(owner_operation_id)",
+            "CREATE UNIQUE INDEX resource_locks_token_idx ON resource_locks(token)",
+        ),
+        ("DROP TABLE resource_locks",),
+    ),
 )
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -498,8 +521,17 @@ def detect_schema_version(connection: sqlite3.Connection) -> int:
             diagnostic_columns = _columns(connection, "diagnostic_events")
             if not {"id", "event_code", "severity", "component", "operation_id", "occurrence_count", "status"} <= diagnostic_columns:
                 raise MigrationError("Таблица диагностических событий неполная")
+        has_locks = "resource_locks" in tables
+        if has_locks and not has_diagnostics:
+            raise MigrationError("Блокировки ресурсов существуют без диагностики")
+        if has_locks:
+            lock_columns = _columns(connection, "resource_locks")
+            if not {"resource_type", "resource_id", "lock_mode", "owner_operation_id", "token", "heartbeat_at", "expires_at"} <= lock_columns:
+                raise MigrationError("Таблица блокировок ресурсов неполная")
         inferred = (
-            11
+            12
+            if has_locks
+            else 11
             if has_diagnostics
             else 10
             if has_outbox

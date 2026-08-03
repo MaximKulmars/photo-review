@@ -17,6 +17,7 @@ from app.application.commands.file_operations import (
     FileOperationResult,
 )
 from app.db import Database
+from app.domain.locks import ResourceLock
 
 
 class FileOperationError(RuntimeError):
@@ -78,13 +79,17 @@ class LocalFileOperationExecutor:
         roots: dict[str, Path],
         filesystem: LocalFilesystem | None = None,
         database_update: DatabaseUpdate | None = None,
+        lock_repository=None,
     ):
         self.database = database
         self.roots = {name: path.resolve() for name, path in roots.items()}
         self.filesystem = filesystem or LocalFilesystem()
         self.database_update = database_update
+        self.lock_repository = lock_repository
 
-    def execute(self, command: FileOperationCommand) -> FileOperationResult:
+    def execute(self, command: FileOperationCommand, *, lock: ResourceLock | None = None) -> FileOperationResult:
+        if lock is not None and (self.lock_repository is None or not self.lock_repository.owns(lock)):
+            raise FileOperationError("resource lock ownership is required before a filesystem change")
         fingerprint = self._fingerprint(command)
         previous = self._load_command(command.command_id)
         if previous:

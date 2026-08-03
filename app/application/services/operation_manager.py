@@ -16,6 +16,8 @@ from ..commands.operations import (
     OperationItemOwnershipError,
 )
 from ..ports.operations import OperationRepository
+from ..ports.resource_locks import ResourceLockRepository
+from ...domain.locks import LockAcquireResult, ResourceLockRequest
 from ...domain.operations import (
     Operation,
     OperationDraft,
@@ -31,8 +33,9 @@ from ...domain.operations import (
 class OperationManager:
     """Coordinates state changes without invoking a worker or filesystem adapter."""
 
-    def __init__(self, repository: OperationRepository):
+    def __init__(self, repository: OperationRepository, locks: ResourceLockRepository | None = None):
         self.repository = repository
+        self.locks = locks
 
     def create_operation(self, command: CreateOperationCommand) -> OperationCreationResult:
         if not command.draft.operation_type or not command.draft.title:
@@ -160,11 +163,20 @@ class OperationManager:
     def unfinished_operations(self) -> list[Operation]:
         return self.repository.unfinished()
 
+    def acquire_resource_locks(self, locks: ResourceLockRepository, operation_id: str, resources: Sequence[ResourceLockRequest]) -> LockAcquireResult:
+        operation = self._require(operation_id)
+        if operation.status in {OperationStatus.COMPLETED, OperationStatus.COMPLETED_WITH_ERRORS, OperationStatus.FAILED, OperationStatus.CANCELLED}:
+            raise OperationActionUnavailableError("acquire_resource_locks")
+        return locks.acquire(operation_id, resources)
+
     def _transition(self, operation_id: str, target: OperationStatus) -> Operation:
         operation = self._require(operation_id)
         if operation.status == target:
             return operation
-        return self.repository.transition(operation_id, target, expected_version=operation.version)
+        updated = self.repository.transition(operation_id, target, expected_version=operation.version)
+        if self.locks and target in {OperationStatus.COMPLETED, OperationStatus.COMPLETED_WITH_ERRORS, OperationStatus.FAILED, OperationStatus.CANCELLED}:
+            self.locks.release_operation(operation_id)
+        return updated
 
     def _transition_item(self, operation_id: str, item_id: str, target: OperationItemStatus, **kwargs) -> OperationItem:
         item = self._item_for(operation_id, item_id)

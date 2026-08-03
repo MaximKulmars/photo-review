@@ -23,6 +23,7 @@ from .library_api import install_library_api
 from .infrastructure.diagnostics import bind_diagnostic_context, configure_json_logging, shutdown_json_logging
 from .infrastructure.diagnostics import DiagnosticService
 from .infrastructure.database.operations import SqliteOperationRepository
+from .infrastructure.database.locks import SqliteResourceLockRepository
 from .application.services.operation_manager import OperationManager
 from .web.operations_api import install_operations_api
 from .security import password_matches, safe_path
@@ -34,7 +35,7 @@ database = dependencies.database
 storage = dependencies.storage
 jobs = dependencies.jobs
 library_indexer = dependencies.library_indexer
-operation_manager = OperationManager(SqliteOperationRepository(database))
+operation_manager = OperationManager(SqliteOperationRepository(database), SqliteResourceLockRepository(database))
 diagnostics = DiagnosticService(database)
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 

@@ -56,7 +56,7 @@ def test_migration_creates_operation_tables_and_indexes(tmp_path):
 
     assert {"operations", "operation_items", "media", "containers"} <= tables
     assert {"operations_status_idx", "operations_parent_idx", "operation_items_operation_idx", "operation_items_object_idx"} <= indexes
-    assert database.schema_version() == 11
+    assert database.schema_version() == 12
 
 
 def test_existing_database_migrates_without_losing_legacy_tables(tmp_path):
