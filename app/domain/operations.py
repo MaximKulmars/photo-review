@@ -155,6 +155,10 @@ class Operation:
     user_message: str | None
     version: int
     parent_operation_id: str | None
+    created_at: str | None = None
+    queued_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
 
 
 @dataclass(frozen=True)

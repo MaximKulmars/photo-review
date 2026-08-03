@@ -144,6 +144,37 @@ class SqliteOperationRepository:
             rows = connection.execute(f"SELECT * FROM operations WHERE status IN ({placeholders}) ORDER BY created_at", tuple(UNFINISHED_OPERATION_STATUSES)).fetchall()
             return [self._operation_from_row(row) for row in rows]
 
+    def list(self, *, statuses: Sequence[OperationStatus] = (), operation_type: str | None = None, created_from: str | None = None, created_to: str | None = None, has_errors: bool | None = None, limit: int = 50, offset: int = 0) -> tuple[list[Operation], int]:
+        filters: list[str] = []
+        parameters: list[object] = []
+        if statuses:
+            filters.append("status IN (" + ",".join("?" for _ in statuses) + ")")
+            parameters.extend(statuses)
+        if operation_type:
+            filters.append("operation_type=?")
+            parameters.append(operation_type)
+        if created_from:
+            filters.append("created_at>=?")
+            parameters.append(created_from)
+        if created_to:
+            filters.append("created_at<=?")
+            parameters.append(created_to)
+        if has_errors is True:
+            filters.append("failed_items>0")
+        if has_errors is False:
+            filters.append("failed_items=0")
+        where = " WHERE " + " AND ".join(filters) if filters else ""
+        with self.database.connect() as connection:
+            total = int(connection.execute("SELECT COUNT(*) FROM operations" + where, tuple(parameters)).fetchone()[0])
+            rows = connection.execute("SELECT * FROM operations" + where + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?", tuple(parameters + [limit, offset])).fetchall()
+            return [self._operation_from_row(row) for row in rows], total
+
+    def items_page(self, operation_id: str, *, limit: int = 100, offset: int = 0) -> tuple[list[OperationItem], int]:
+        with self.database.connect() as connection:
+            total = int(connection.execute("SELECT COUNT(*) FROM operation_items WHERE operation_id=?", (operation_id,)).fetchone()[0])
+            rows = connection.execute("SELECT * FROM operation_items WHERE operation_id=? ORDER BY created_at, id LIMIT ? OFFSET ?", (operation_id, limit, offset)).fetchall()
+            return [self._item(row) for row in rows], total
+
     def cancel_pending_items(self, operation_id: str) -> list[OperationItem]:
         with self.database.connect() as connection:
             connection.execute("UPDATE operation_items SET status=?, finished_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE operation_id=? AND status IN (?, ?)", (OperationItemStatus.CANCELLED, operation_id, OperationItemStatus.PENDING, OperationItemStatus.QUEUED))
@@ -197,6 +228,7 @@ class SqliteOperationRepository:
             can_continue=bool(row["can_continue"]), requires_confirmation=bool(row["requires_confirmation"]), parameters=json.loads(row["parameters_json"]),
             result=json.loads(row["result_json"]) if row["result_json"] else None, error_code=row["error_code"], user_message=row["user_message"],
             version=row["version"], parent_operation_id=row["parent_operation_id"],
+            created_at=row["created_at"], queued_at=row["queued_at"], started_at=row["started_at"], finished_at=row["finished_at"],
         )
 
     @staticmethod

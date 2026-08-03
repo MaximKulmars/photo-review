@@ -1,5 +1,7 @@
 """Port for persistence of user-visible long-running operations."""
 
+from __future__ import annotations
+
 from typing import Protocol, Sequence
 
 from ...domain.operations import Operation, OperationDraft, OperationItem, OperationItemDraft, OperationItemStatus, OperationStatus
@@ -27,3 +29,7 @@ class OperationRepository(Protocol):
     def cancel_pending_items(self, operation_id: str) -> list[OperationItem]: ...
 
     def unfinished(self) -> list[Operation]: ...
+
+    def list(self, *, statuses: Sequence[OperationStatus] = (), operation_type: str | None = None, created_from: str | None = None, created_to: str | None = None, has_errors: bool | None = None, limit: int = 50, offset: int = 0) -> tuple[list[Operation], int]: ...
+
+    def items_page(self, operation_id: str, *, limit: int = 100, offset: int = 0) -> tuple[list[OperationItem], int]: ...

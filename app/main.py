@@ -21,6 +21,10 @@ from .bootstrap import build_application_dependencies
 from .config import Config, load_config
 from .library_api import install_library_api
 from .infrastructure.diagnostics import bind_diagnostic_context, configure_json_logging, shutdown_json_logging
+from .infrastructure.diagnostics import DiagnosticService
+from .infrastructure.database.operations import SqliteOperationRepository
+from .application.services.operation_manager import OperationManager
+from .web.operations_api import install_operations_api
 from .security import password_matches, safe_path
 
 BASE_DIR = Path(__file__).parent
@@ -30,6 +34,8 @@ database = dependencies.database
 storage = dependencies.storage
 jobs = dependencies.jobs
 library_indexer = dependencies.library_indexer
+operation_manager = OperationManager(SqliteOperationRepository(database))
+diagnostics = DiagnosticService(database)
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 
@@ -71,6 +77,7 @@ def require_login(request: Request) -> None:
 
 
 install_library_api(app, database, library_indexer, require_login, config)
+install_operations_api(app, operation_manager, require_login, diagnostics)
 
 def row_dict(row) -> dict:
     return {key: row[key] for key in row.keys()}
