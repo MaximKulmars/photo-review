@@ -16,19 +16,18 @@ from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 
 from .analyzer import CATEGORIES, JobManager
+from .bootstrap import build_application_dependencies
 from .config import Config, load_config
-from .db import Database
-from .library import LibraryIndexer
 from .library_api import install_library_api
 from .security import password_matches, safe_path
-from .storage import Storage
 
 BASE_DIR = Path(__file__).parent
 config: Config = load_config()
-database = Database(config.database_path)
-storage = Storage(config.photos_root, config.quarantine_root, database)
-jobs = JobManager(database, config.photos_root, config.thumbnail_root)
-library_indexer = LibraryIndexer(database, config.library_roots)
+dependencies = build_application_dependencies(config)
+database = dependencies.database
+storage = dependencies.storage
+jobs = dependencies.jobs
+library_indexer = dependencies.library_indexer
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 

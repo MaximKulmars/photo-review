@@ -1,0 +1,1 @@
+"""Future filesystem adapters."""
