@@ -8,15 +8,27 @@ services:
     restart: unless-stopped
     ports:
       - "8088:8080"
+    env_file:
+      - .env
     environment:
-      PHOTO_REVIEW_PASSWORD: "change-me"
-      PHOTO_REVIEW_SESSION_SECRET: "replace-with-a-long-random-string"
-      PHOTO_REVIEW_OCR_LANGS: "rus+eng"
+      PHOTO_REVIEW_PHOTOS: /photos
+      PHOTO_REVIEW_QUARANTINE: /quarantine
+      PHOTO_REVIEW_DATA: /data
+      PHOTO_REVIEW_HUEY_DB: /queue/huey.sqlite3
+      PHOTO_REVIEW_STAGING: /staging
       TZ: "Asia/Yerevan"
     volumes:
-      - /srv/storage/02_IMG/Photos:/photos
-      - /srv/storage/02_IMG/Photo_Quarantine:/quarantine
-      - ./photo-review-data:/data
+      - ${PHOTO_REVIEW_PHOTOS_HOST:?Set PHOTO_REVIEW_PHOTOS_HOST in .env}:/photos
+      - ${PHOTO_REVIEW_QUARANTINE_HOST:?Set PHOTO_REVIEW_QUARANTINE_HOST in .env}:/quarantine
+      - ${PHOTO_REVIEW_STATE_HOST:?Set PHOTO_REVIEW_STATE_HOST in .env}:/data
+      - ${PHOTO_REVIEW_QUEUE_HOST:?Set PHOTO_REVIEW_QUEUE_HOST in .env}:/queue
+      - ${PHOTO_REVIEW_STAGING_HOST:?Set PHOTO_REVIEW_STAGING_HOST in .env}:/staging
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
     deploy:
       resources:
         limits:
@@ -28,15 +40,27 @@ services:
     container_name: photo-review-worker
     restart: unless-stopped
     command: ["huey_consumer", "app.infrastructure.background.tasks.huey", "-k", "thread", "-w", "1"]
+    env_file:
+      - .env
     environment:
-      PHOTO_REVIEW_PASSWORD: "change-me"
-      PHOTO_REVIEW_SESSION_SECRET: "replace-with-a-long-random-string"
-      PHOTO_REVIEW_OCR_LANGS: "rus+eng"
+      PHOTO_REVIEW_PHOTOS: /photos
+      PHOTO_REVIEW_QUARANTINE: /quarantine
+      PHOTO_REVIEW_DATA: /data
+      PHOTO_REVIEW_HUEY_DB: /queue/huey.sqlite3
+      PHOTO_REVIEW_STAGING: /staging
       TZ: "Asia/Yerevan"
     volumes:
-      - /srv/storage/02_IMG/Photos:/photos
-      - /srv/storage/02_IMG/Photo_Quarantine:/quarantine
-      - ./photo-review-data:/data
+      - ${PHOTO_REVIEW_PHOTOS_HOST:?Set PHOTO_REVIEW_PHOTOS_HOST in .env}:/photos
+      - ${PHOTO_REVIEW_QUARANTINE_HOST:?Set PHOTO_REVIEW_QUARANTINE_HOST in .env}:/quarantine
+      - ${PHOTO_REVIEW_STATE_HOST:?Set PHOTO_REVIEW_STATE_HOST in .env}:/data
+      - ${PHOTO_REVIEW_QUEUE_HOST:?Set PHOTO_REVIEW_QUEUE_HOST in .env}:/queue
+      - ${PHOTO_REVIEW_STAGING_HOST:?Set PHOTO_REVIEW_STAGING_HOST in .env}:/staging
+    healthcheck:
+      test: ["CMD", "python", "-c", "from app.config import load_config; config=load_config(); assert config.huey_db_path.parent.exists()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
     deploy:
       resources:
         limits:

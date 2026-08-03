@@ -68,3 +68,19 @@ Huey stores technical tasks in `PHOTO_REVIEW_HUEY_DB`, which defaults to
 `$PHOTO_REVIEW_DATA/queue/huey.sqlite3`; it remains separate from the main
 PhotoHome database. Docker Compose starts the same worker as
 `photo-review-worker`.
+
+## Core runtime configuration
+
+Copy `.env.example` to `.env` and replace all host paths and secrets. The
+Compose services run separately: `docker compose up photo-review` starts web,
+while `docker compose up photo-review-worker` starts only the Huey consumer.
+The main state directory, Huey queue directory, and staging directory are
+separate mounts. No service removes or migrates library files during startup.
+
+For local development without a `.env`, the application uses the safe
+`./.photo-review/` directory rather than a user library. Run web with
+`python -m uvicorn app.main:app --reload` and worker with
+`python -m app.workers.huey_consumer`. Run tests with
+`.venv\\Scripts\\python.exe -m pytest -q` on Windows or `python -m pytest -q`
+on Linux/macOS. Test mode (`PHOTO_REVIEW_TEST_MODE=true`) rejects media and
+staging roots outside `PHOTO_REVIEW_DATA`.

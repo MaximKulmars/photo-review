@@ -45,14 +45,15 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    roots = [config.photos_root, config.quarantine_root, config.data_root, config.thumbnail_root, config.model_root]
+    roots = [config.photos_root, config.quarantine_root, config.data_root, config.thumbnail_root, config.model_root, config.resolved_staging_root, config.log_root]
     if config.videos_root is not None:
         roots.append(config.videos_root)
     for path in roots:
         path.mkdir(parents=True, exist_ok=True)
     database.initialize()
     configure_json_logging(config.data_root / "logs")
-    operation_recovery.recover()
+    if config.startup_recovery:
+        operation_recovery.recover()
     jobs.start_worker()
     try:
         yield
@@ -425,4 +426,6 @@ def audit(limit: int = 100):
 
 
 @app.get("/health")
-def health(): return {"status": "ok"}
+def health():
+    database.schema_version()
+    return {"status": "ok", "database": "ready"}

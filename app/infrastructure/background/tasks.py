@@ -14,9 +14,10 @@ from .huey_app import create_huey
 
 
 logger = logging.getLogger("photohome.huey")
-RETRY_COUNT = 3
-RETRY_DELAY_SECONDS = 5
-huey = create_huey(load_config())
+worker_config = load_config()
+RETRY_COUNT = worker_config.retry_count
+RETRY_DELAY_SECONDS = worker_config.retry_delay_seconds
+huey = create_huey(worker_config)
 
 
 class TransientOperationTaskError(RuntimeError):
