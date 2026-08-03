@@ -32,6 +32,9 @@ test = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "integration: isolated SQLite and filesystem integration test",
+]
 
 [tool.setuptools]
 packages = ["app"]

@@ -182,7 +182,11 @@ class OperationManager:
         item = self._item_for(operation_id, item_id)
         if item.status == target:
             return item
-        return self.repository.transition_item(item_id, target, **kwargs)
+        updated = self.repository.transition_item(item_id, target, **kwargs)
+        operation = self.repository.get(operation_id)
+        if self.locks and operation and operation.status in {OperationStatus.COMPLETED, OperationStatus.COMPLETED_WITH_ERRORS, OperationStatus.FAILED, OperationStatus.CANCELLED}:
+            self.locks.release_operation(operation_id)
+        return updated
 
     def _item_for(self, operation_id: str, item_id: str) -> OperationItem:
         item = next((item for item in self.repository.items_for(operation_id) if item.id == item_id), None)
